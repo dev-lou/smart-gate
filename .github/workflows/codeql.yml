@@ -12,6 +12,10 @@ on:
   schedule:
     - cron: "0 6 * * 1" # Every Monday at 6:00 UTC
 
+permissions:
+  security-events: write
+  actions: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
