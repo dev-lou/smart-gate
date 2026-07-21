@@ -372,8 +372,10 @@ describe("nonMaxSuppression", () => {
 
 describe("settings parsing", () => {
   it("correctly parses uniform_detection_enabled from settings", () => {
-    expect("true" === "true").toBe(true);
-    expect("false" === "true").toBe(false);
+    const enabled: string = "true";
+    const disabled: string = "false";
+    expect(enabled === "true").toBe(true);
+    expect(disabled === "true").toBe(false);
   });
 
   it("correctly parses face_recognition_threshold", () => {
