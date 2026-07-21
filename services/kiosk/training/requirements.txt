@@ -1,0 +1,8 @@
+# Smart Gate — Uniform Training Dependencies
+# Install: pip install -r requirements.txt
+#
+# Trains YOLO11n model for uniform detection.
+# Run on your PC with a GPU for faster training.
+
+ultralytics>=8.3.0
+onnxruntime>=1.21.0

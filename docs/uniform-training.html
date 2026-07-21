@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Gate — YOLO11n Uniform Training Guide</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    line-height: 1.7;
+    padding: 2rem;
+  }
+  .container { max-width: 900px; margin: 0 auto; }
+
+  h1 {
+    font-size: 2.5rem; font-weight: 800;
+    background: linear-gradient(135deg, #60a5fa, #a78bfa);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin-bottom: 1rem;
+  }
+  h2 {
+    font-size: 1.5rem; font-weight: 700; color: #f1f5f9;
+    margin-top: 3rem; margin-bottom: 1rem;
+    padding-bottom: 0.5rem; border-bottom: 2px solid #1e3a5f;
+  }
+  h3 { font-size: 1.15rem; font-weight: 600; color: #93c5fd; margin-top: 1.5rem; margin-bottom: 0.75rem; }
+  p { margin-bottom: 1rem; color: #94a3b8; }
+
+  .subtitle { font-size: 1.1rem; color: #64748b; margin-bottom: 2rem; }
+
+  .badge {
+    display: inline-block; padding: 0.25rem 0.75rem; border-radius: 9999px;
+    font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .badge-blue { background: #1e3a5f; color: #93c5fd; }
+  .badge-green { background: #14532d; color: #4ade80; }
+  .badge-yellow { background: #422006; color: #facc15; }
+  .badge-red { background: #450a0a; color: #f87171; }
+  .badge-purple { background: #2e1065; color: #c4b5fd; }
+
+  .step-card {
+    background: #1e293b; border: 1px solid #334155; border-radius: 16px;
+    padding: 1.75rem; margin-bottom: 1.5rem; transition: border-color 0.2s;
+  }
+  .step-card:hover { border-color: #475569; }
+
+  .step-number {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 2rem; height: 2rem; background: #2563eb; color: white;
+    font-weight: 700; font-size: 0.875rem; border-radius: 8px; margin-right: 0.75rem;
+  }
+
+  code {
+    background: #0f172a; color: #93c5fd; padding: 0.125rem 0.375rem;
+    border-radius: 4px; font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.875rem;
+  }
+  pre {
+    background: #0f172a; border: 1px solid #334155; border-radius: 10px; padding: 1.25rem;
+    overflow-x: auto; font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.85rem; color: #cbd5e1; line-height: 1.6; margin: 0.75rem 0;
+  }
+
+  ul, ol { margin: 1rem 0; padding-left: 1.5rem; }
+  li { margin-bottom: 0.5rem; color: #94a3b8; }
+
+  .tip-box {
+    background: #1e293b; border-left: 4px solid #facc15; border-radius: 0 10px 10px 0;
+    padding: 1rem 1.25rem; margin: 1.5rem 0;
+  }
+  .tip-box strong { color: #facc15; }
+  .info-box {
+    background: #1e293b; border-left: 4px solid #60a5fa; border-radius: 0 10px 10px 0;
+    padding: 1rem 1.25rem; margin: 1.5rem 0;
+  }
+  .info-box strong { color: #60a5fa; }
+  .warn-box {
+    background: #1e293b; border-left: 4px solid #f87171; border-radius: 0 10px 10px 0;
+    padding: 1rem 1.25rem; margin: 1.5rem 0;
+  }
+  .warn-box strong { color: #f87171; }
+
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+  th, td { text-align: left; padding: 0.75rem 1rem; border-bottom: 1px solid #334155; font-size: 0.9rem; }
+  th { background: #1e293b; color: #94a3b8; font-weight: 600; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; }
+  td { color: #cbd5e1; }
+
+  .flow-arrow { display: block; text-align: center; color: #475569; font-size: 1.5rem; padding: 0.75rem 0; }
+
+  .where-box {
+    background: #1e293b; border: 2px solid #334155; border-radius: 12px;
+    padding: 1rem 1.25rem; margin: 1rem 0;
+    display: flex; align-items: flex-start; gap: 0.75rem;
+  }
+  .where-icon { font-size: 1.5rem; line-height: 1; }
+  .where-text { color: #94a3b8; font-size: 0.9rem; }
+  .where-text strong { color: #e2e8f0; }
+
+  .folder-tree {
+    background: #0f172a; border: 1px solid #334155; border-radius: 10px;
+    padding: 1.25rem; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;
+    line-height: 1.8; color: #cbd5e1; margin: 1rem 0;
+  }
+  .folder-tree .folder { color: #60a5fa; }
+  .folder-tree .file { color: #94a3b8; }
+  .folder-tree .arrow { color: #475569; }
+  .folder-tree .highlight { background: #1e3a5f; padding: 0 0.25rem; border-radius: 2px; }
+
+  .footer { margin-top: 4rem; padding-top: 2rem; border-top: 1px solid #334155; text-align: center; color: #475569; font-size: 0.85rem; }
+
+  @media (max-width: 600px) {
+    body { padding: 1rem; }
+    h1 { font-size: 1.75rem; }
+    .step-card { padding: 1.25rem; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>🎯 YOLO11n Uniform Training Guide</h1>
+<p class="subtitle">Train an AI to detect your school's uniforms — right on your PC</p>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- BIG PICTURE FIRST -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<h2>📌 The Big Picture — Where Things Go</h2>
+
+<div class="step-card">
+<p>Before we start, understand <strong>where your files end up</strong>:</p>
+
+<div class="where-box">
+  <span class="where-icon">📸</span>
+  <div class="where-text">
+    <strong>Your photos:</strong> Stay on <strong>YOUR PC</strong> inside this repo → <code>services/kiosk/training/dataset/</code><br>
+    They are <strong>temporarily</strong> uploaded to Roboflow just for labeling, then you download them back to your PC. After that you can delete them from Roboflow.
+  </div>
+</div>
+
+<div class="where-box">
+  <span class="where-icon">🏷️</span>
+  <div class="where-text">
+    <strong>Label files (.txt):</strong> Also on <strong>YOUR PC</strong>, same folder as the photos. Each photo gets a .txt file that says where the uniform is in the photo.
+  </div>
+</div>
+
+<div class="where-box">
+  <span class="where-icon">🤖</span>
+  <div class="where-text">
+    <strong>Trained model (.onnx):</strong> Goes to <strong>the cloud</strong> (Vercel or Supabase Storage) — this is the 6MB file the tablet downloads. It does NOT contain your photos, just math patterns.
+  </div>
+</div>
+
+<div class="where-box">
+  <span class="where-icon">☁️</span>
+  <div class="where-text">
+    <strong>What goes to Supabase:</strong> NOT your photos. Only the uniform names (e.g. "BSIT Uniform" → class_id: 0). These are text records, not images.
+  </div>
+</div>
+
+<div class="tip-box">
+<strong>💡 Remember:</strong> Your photos are ONLY on your PC + temporarily on Roboflow. They NEVER go to Supabase. Only the final 6MB model file goes online.
+</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- VISUAL FLOW -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<h2>🔄 Complete Flow — Step by Step</h2>
+
+<div class="step-card">
+<pre style="font-size: 0.8rem; line-height: 2;">
+  YOUR PHONE                         ROBOFLOW (cloud)              YOUR PC (repo)              CLOUD (Vercel/Supabase)
+  ──────────                         ───────────────              ──────────────              ────────────────────────
+     📸 Take photos                      ☁️ Upload photos              💻 Train YOLO                 ☁️ Host .onnx file
+        │                                    │                            │                              │
+        ├── BSIT photos (200) ─────────────► │                            │                              │
+        ├── CHM photos (200) ──────────────► │                            │                              │
+        ├── COAGRI photos (200) ───────────► │                            │                              │
+        └── Educ photos (200) ─────────────► │                            │                              │
+                                             │                            │                              │
+        ◄── Draw boxes on each photo ────    │                            │                              │
+        ◀── Download ZIP back ────────────   │                            │                              │
+                                             │                            │                              │
+                                             │    Extract ZIP into ──────►│                              │
+                                             │    dataset/images/train/   │                              │
+                                             │    dataset/labels/train/   │                              │
+                                             │                            │                              │
+                                             │                            │  python train_uniform_yolo.py│
+                                             │                            │         │                    │
+                                             │                            │    Creates uniform_yolo11n.onnx
+                                             │                            │         │                    │
+                                             │                            │         └──── Upload ──────►│
+                                             │                            │                              │
+                                             │                            │    ←── Tablet downloads ───│
+</pre>
+
+<p><strong>3 things go to the cloud:</strong> Only the .onnx model + uniform names in Supabase + student records in Supabase.</p>
+<p><strong>Your photos:</strong> Only on your PC + temporarily on Roboflow during labeling.</p>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- STEP 1 -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<h2>📸 Step 1: Take Photos</h2>
+
+<div class="step-card">
+<span class="badge badge-blue">100-200 photos per uniform type</span>
+
+<p>Take photos of students wearing each uniform using your phone. You need both the photo AND a label file for training.</p>
+
+<table>
+  <thead>
+    <tr>
+      <th>Uniform Type</th>
+      <th>Photos Needed</th>
+      <th>Put in folder</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>BSIT Uniform</td>
+      <td>100-200</td>
+      <td><code>dataset/images/train/</code> (80%) + <code>dataset/images/val/</code> (20%)</td>
+    </tr>
+    <tr>
+      <td>CHM Uniform</td>
+      <td>100-200</td>
+      <td>Same split</td>
+    </tr>
+    <tr>
+      <td>COAGRI Uniform</td>
+      <td>100-200</td>
+      <td>Same split</td>
+    </tr>
+    <tr>
+      <td>Education Uniform</td>
+      <td>100-200</td>
+      <td>Same split</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>📷 Photo Tips:</h3>
+<ul>
+  <li>Different angles (front, side)</li>
+  <li>Different lighting (indoor, outdoor)</li>
+  <li>Different backgrounds (hallway, classroom)</li>
+  <li>Full upper body visible</li>
+  <li>Not blurry</li>
+</ul>
+</div>
+
+<div class="flow-arrow">⬇️</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- STEP 2 -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<h2>🏷️ Step 2: Label Photos on Roboflow</h2>
+
+<div class="step-card">
+<span class="badge badge-green">Free, browser-based</span>
+
+<p>Roboflow is where you upload photos, draw boxes around the uniform, and download back with labels. <strong>Photos go to Roboflow → you label → you download back with labels included.</strong></p>
+
+<h3>2.1 Sign up</h3>
+<ol>
+  <li>Go to <a href="https://roboflow.com" style="color: #60a5fa;">roboflow.com</a> — sign up (free tier)</li>
+  <li>Click <strong>"Create Project"</strong></li>
+  <li>Name: <code>smart-gate-uniforms</code></li>
+  <li>Type: <strong>Object Detection (Bounding Box)</strong></li>
+</ol>
+
+<h3>2.2 Upload your photos</h3>
+<ol>
+  <li>Click <strong>"Upload"</strong></li>
+  <li>Drag & drop your photos from your phone/PC</li>
+  <li>Set split: 80% train / 20% val</li>
+  <li>Click <strong>"Upload & Continue"</strong></li>
+</ol>
+
+<h3>2.3 Draw boxes (label)</h3>
+<ol>
+  <li>Click <strong>"Start Annotating"</strong></li>
+  <li>For each photo: press <code>B</code> → draw a box around the uniform top → select the correct class name</li>
+  <li>Press right arrow → next photo</li>
+</ol>
+
+<h3>2.4 Download back to your PC</h3>
+<ol>
+  <li>Go to <strong>"Generate"</strong> → click <strong>"Generate"</strong></li>
+  <li>Click <strong>"Download"</strong></li>
+  <li>Format: <strong>"YOLO v8"</strong></li>
+  <li>Click download → you get a ZIP file</li>
+</ol>
+
+<div class="tip-box">
+<strong>💡 The ZIP contains BOTH photos AND labels:</strong> When you download from Roboflow, you get:
+<br><code>images/train/photo001.jpg</code> ← the original photo
+<br><code>labels/train/photo001.txt</code> ← the label (where the uniform is)
+<br><strong>You need BOTH for training.</strong> The image shows YOLO what a BSIT uniform looks like. The .txt file tells YOLO WHERE in the photo it is.
+</div>
+</div>
+
+<div class="flow-arrow">⬇️</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- STEP 3 -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<h2>📂 Step 3: Place Files in Your Repo (LOCAL)</h2>
+
+<div class="step-card">
+<span class="badge badge-purple">This is on YOUR PC — inside the project</span>
+
+<p>Extract the ZIP from Roboflow. Then copy the folders into your project's dataset folder. Here's exactly where each file goes:</p>
+
+<div class="folder-tree">
+<span class="folder">services/kiosk/training/dataset/</span>
+├── <span class="folder">images/</span>
+│   ├── <span class="folder">train/</span>     <span class="arrow">← 📸</span> <span class="highlight">Put 80% of your photos HERE</span>
+│   │   ├── bsit_001.jpg
+│   │   ├── chm_001.jpg
+│   │   └── ...
+│   └── <span class="folder">val/</span>       <span class="arrow">← 📸</span> <span class="highlight">Put 20% of your photos HERE</span>
+│       ├── bsit_050.jpg
+│       └── ...
+├── <span class="folder">labels/</span>
+│   ├── <span class="folder">train/</span>     <span class="arrow">← 🏷️</span> <span class="highlight">Put .txt label files that MATCH the train photos HERE</span>
+│   │   ├── bsit_001.txt
+│   │   ├── chm_001.txt
+│   │   └── ...
+│   └── <span class="folder">val/</span>       <span class="arrow">← 🏷️</span> <span class="highlight">Put .txt label files that MATCH the val photos HERE</span>
+│       ├── bsit_050.txt
+│       └── ...
+└── <span class="file">uniform_dataset.yaml</span>   <span class="arrow">← ⚙️</span> This file already exists, just verify class names
+</div>
+
+<div class="warn-box">
+<strong>⚠️ IMPORTANT:</strong> Each photo MUST have a matching .txt file with the SAME name. Example:
+<br><code>bsit_001.jpg</code> → needs <code>bsit_001.txt</code>
+<br><code>bsit_002.jpg</code> → needs <code>bsit_002.txt</code>
+<br>If a photo has no .txt file, YOLO will ignore it or error.
+</div>
+
+<div class="info-box">
+<strong>📥 How to do this from Roboflow ZIP:</strong><br>
+1. Extract the ZIP → you'll see <code>train/</code> and <code>val/</code> folders<br>
+2. Inside those: <code>images/</code> and <code>labels/</code> folders<br>
+3. Copy these directly into <code>services/kiosk/training/dataset/</code><br>
+4. Overwrite the existing .gitkeep files<br>
+5. That's it — you're ready to train
+</div>
+</div>
+
+<div class="flow-arrow">⬇️</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- STEP 4 -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<h2>💻 Step 4: Install Requirements</h2>
+
+<div class="step-card">
+<p>Open a terminal on your PC and run:</p>
+<pre>cd smart-gate/services/kiosk/training
+pip install -r requirements.txt</pre>
+<p>This installs <code>ultralytics</code> + <code>onnxruntime</code>. Wait for it to finish (~2-5 minutes).</p>
+</div>
+
+<div class="flow-arrow">⬇️</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- STEP 4.5: FP16 QUANTIZATION -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<h2>⚡ Step 4.5: (Optional) FP16 Quantization for Faster Tablet Performance</h2>
+
+<div class="step-card">
+<span class="badge badge-yellow">Recommended for tablets</span>
+
+<p>After training your model in Step 5, you can <strong>quantize it to FP16</strong> (half precision). This makes the ONNX file <strong>~50% smaller</strong> (~3MB instead of ~6MB) and runs <strong>~2x faster</strong> on tablet GPUs, with minimal accuracy loss (~1-2%).</p>
+
+<div class="info-box">
+<strong>💡 When to do this:</strong> After Step 5 finishes training, run the export script. The export script already includes FP16 by default.
+</div>
+
+<h3>How precision formats compare:</h3>
+<table>
+  <thead>
+    <tr><th>Format</th><th>Size</th><th>Speed</th><th>Accuracy</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>FP16 (default)</strong></td><td>~6 MB</td><td>~2x faster</td><td>~99%</td></tr>
+    <tr><td>FP32 (full)</td><td>~12 MB</td><td>Baseline</td><td>100%</td></tr>
+    <tr><td>INT8 (quantized)</td><td>~3 MB</td><td>~3x faster</td><td>~95-98%</td></tr>
+  </tbody>
+</table>
+
+<div class="tip-box">
+<strong>✅ No extra work needed:</strong> The <code>export_to_onnx.py</code> script automatically exports with FP16. Run:<br>
+<code>python export_to_onnx.py</code><br>
+The <code>--fp16</code> flag is enabled by default, creating a ~6MB model optimized for tablet inference.
+</div>
+</div>
+
+<div class="flow-arrow">⬇️</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- STEP 5 -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<h2>🤖 Step 5: Train the Model (runs on YOUR PC)</h2>
+
+<div class="step-card">
+<span class="badge badge-purple">Training runs locally — photos never leave your PC during this step</span>
+
+<p>Run the training script:</p>
+<pre>python train_uniform_yolo.py</pre>
+
+<p><strong>What happens:</strong></p>
+<ol>
+  <li>Downloads YOLO11n pre-trained model (once, ~6MB from internet)</li>
+  <li>Reads your photos + labels from <code>dataset/</code> folder</li>
+  <li>Trains for 100 rounds (epochs) — takes ~30-60 min on CPU, 5-15 min on GPU</li>
+  <li>Saves best model to <code>runs/train/uniform_detector/weights/best.pt</code></li>
+  <li>Exports to ONNX format: <code>runs/train/uniform_detector/weights/best.onnx</code></li>
+</ol>
+
+<div class="tip-box">
+<strong>💡 What's happening inside the training?</strong><br>
+YOLO looks at each photo and its label file. It learns: "When I see a blue shirt with a specific collar and logo, that's class 0 (BSIT). When I see a green shirt, that's class 1 (CHM)." After seeing hundreds of examples, it creates a mathematical model that can recognize uniforms it's never seen before — just like how you can recognize a friend's face even if you've never seen them in that exact lighting.
+</div>
+
+<h3>📊 Good results:</h3>
+<table>
+  <tr><th>Metric</th><th>Good Score</th></tr>
+  <tr><td>mAP50</td><td>> 85%</td></tr>
+  <tr><td>Precision</td><td>> 85%</td></tr>
+  <tr><td>Recall</td><td>> 85%</td></tr>
+</table>
+</div>
+
+<div class="flow-arrow">⬇️</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- STEP 6 -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<h2>☁️ Step 6: Upload Model to the Cloud</h2>
+
+<div class="step-card">
+<span class="badge badge-green">Only the .onnx file (6MB) — no photos</span>
+
+<p>After training, you have a file: <code>runs/train/uniform_detector/weights/best.onnx</code></p>
+<p><strong>This is the ONLY file that goes online.</strong> Your photos stay on your PC.</p>
+
+<h3>Option A: Put in kiosk public folder (for Vercel)</h3>
+<pre># Copy the ONNX file:
+cp runs/train/uniform_detector/weights/best.onnx ../public/models/uniform_yolo11n.onnx</pre>
+<p>Then update <code>services/kiosk/src/lib/uniform.ts</code> line 37:</p>
+<pre>const YOLO_MODEL_URL = "/models/uniform_yolo11n.onnx";</pre>
+
+<h3>Option B: Upload to Supabase Storage</h3>
+<ol>
+  <li>Supabase Dashboard → <strong>Storage</strong> → create bucket <code>models</code> (public)</li>
+  <li>Upload <code>best.onnx</code></li>
+  <li>Copy the public URL → update <code>uniform.ts</code></li>
+</ol>
+</div>
+
+<div class="flow-arrow">⬇️</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- STEP 7 -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<h2>🗄️ Step 7: Update Supabase with Uniform Names</h2>
+
+<div class="step-card">
+<p>The training script prints the class names and their order. For example:</p>
+<pre>Class 0: BSIT_Uniform
+Class 1: CHM_Uniform
+Class 2: COAGRI_Uniform
+Class 3: Education_Uniform</pre>
+
+<p>Update the migration file <code>database/migrations/002_uniform_types.sql</code> with the EXACT same order:</p>
+<pre>INSERT INTO uniform_types (name, description, class_id) VALUES
+    ('BSIT Uniform', 'BSIT department uniform', 0),
+    ('CHM Uniform', 'CHM department uniform', 1),
+    ('COAGRI Uniform', 'COAGRI department uniform', 2),
+    ('Education Uniform', 'Education department uniform', 3);</pre>
+
+<div class="warn-box">
+<strong>⚠️ CRITICAL:</strong> class_id in Supabase MUST match the YOLO model's class order. If your model says "Class 0: CHM_Uniform", then CHM must be class_id=0 in Supabase. They must be in the EXACT same order.
+</div>
+</div>
+
+<div class="flow-arrow">⬇️</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- STEP 8 -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<h2>✅ Step 8: Verify It Works</h2>
+
+<div class="step-card">
+<ol>
+  <li>Start the kiosk app: <code>pnpm dev:kiosk</code></li>
+  <li>Open Chrome at <code>http://localhost:3002</code></li>
+  <li>Check console (F12): <code>[Uniform] YOLO model loaded</code></li>
+  <li>Face detected + recognized → YOLO checks uniform → match or deny</li>
+</ol>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- TROUBLESHOOTING -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<h2>🔧 Troubleshooting</h2>
+
+<div class="step-card">
+<table>
+  <tr><th>Problem</th><th>Cause</th><th>Fix</th></tr>
+  <tr>
+    <td>Low accuracy (mAP50 < 50%)</td>
+    <td>Not enough photos or bad labels</td>
+    <td>Add more photos, check boxes are drawn correctly</td>
+  </tr>
+  <tr>
+    <td>Wrong uniform detected</td>
+    <td>Class IDs don't match</td>
+    <td>Check class order in training vs Supabase class_id</td>
+  </tr>
+  <tr>
+    <td>Model won't load in browser</td>
+    <td>ONNX export issue or CORS</td>
+    <td>Re-export with <code>simplify=True</code>. Check CORS headers</td>
+  </tr>
+  <tr>
+    <td>"No YOLO model configured" warning</td>
+    <td>YOLO_MODEL_URL is empty</td>
+    <td>Update <code>uniform.ts</code> with the URL to your .onnx file</td>
+  </tr>
+</table>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- QUICK RECAP -->
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<h2>📋 Quick Recap — Where Things Go</h2>
+
+<div class="step-card">
+<table>
+  <tr><th>Item</th><th>Location</th></tr>
+  <tr><td>📸 Your photos (original)</td><td><strong>Your PC</strong> → <code>training/dataset/images/</code></td></tr>
+  <tr><td>🏷️ Label files (.txt)</td><td><strong>Your PC</strong> → <code>training/dataset/labels/</code></td></tr>
+  <tr><td>🤖 Trained model (.onnx)</td><td><strong>Cloud</strong> → Vercel or Supabase Storage</td></tr>
+  <tr><td>📋 Uniform names</td><td><strong>Cloud</strong> → Supabase <code>uniform_types</code> table</td></tr>
+  <tr><td>👨‍🎓 Student records</td><td><strong>Cloud</strong> → Supabase <code>students</code> table</td></tr>
+  <tr><td>📊 Access logs</td><td><strong>Cloud</strong> → Supabase <code>access_logs</code> table</td></tr>
+</table>
+
+<p><strong>Your photos are ONLY on your PC + temporarily on Roboflow while labeling.</strong> Nothing else.</p>
+</div>
+
+<div class="footer">
+  Smart Gate System — Uniform Training Guide v3.1
+</div>
+
+</div>
+</body>
+</html>

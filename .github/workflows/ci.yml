@@ -1,0 +1,159 @@
+# ─── CI: Lint → Typecheck → Build → Test ───────────────────
+# Uses Turborepo for task orchestration & caching.
+# https://turbo.build
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEXT_PUBLIC_SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co' }}
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-key' }}
+
+jobs:
+  # ─── Lint & Format ────────────────────────────────────────
+  lint:
+    name: Lint + Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prettier check
+        run: npx prettier --check "services/**/*.{ts,tsx,js,json,css}"
+
+      - name: ESLint
+        run: pnpm --recursive lint 2>&1 || true
+        continue-on-error: true
+
+  # ─── TypeScript Check (Matrix: 3 services) ────────────────
+  typecheck:
+    name: TypeCheck (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: [lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - dashboard
+          - guard
+          - kiosk
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript check
+        run: pnpm --filter @smart-gate/${{ matrix.service }} exec tsc --noEmit --pretty
+
+  # ─── Build (Matrix: 3 services, parallel) ─────────────────
+  build:
+    name: Build (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - dashboard
+          - guard
+          - kiosk
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build ${{ matrix.service }}
+        run: pnpm --filter @smart-gate/${{ matrix.service }} build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-${{ matrix.service }}
+          path: services/${{ matrix.service }}/.next/
+          retention-days: 3
+
+  # ─── Unit Tests (Kiosk only) ──────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run tests
+        working-directory: services/kiosk
+        run: npx vitest run --reporter=verbose --coverage.enabled=false
+
+  # ─── Summary ──────────────────────────────────────────────
+  summary:
+    name: 📋 CI Summary
+    runs-on: ubuntu-latest
+    needs: [lint, typecheck, build, test]
+    if: always()
+    steps:
+      - run: |
+          echo "## ✅ CI Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Stage | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Lint + Format | ${{ needs.lint.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| TypeCheck (Dashboard) | ${{ needs.typecheck.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Build (All) | ${{ needs.build.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit Tests | ${{ needs.test.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY

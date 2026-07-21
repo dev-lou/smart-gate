@@ -1,0 +1,30 @@
+# Smart Gate — YOLO11 Uniform Detection Dataset
+# ===============================================
+# Edit this file to match your actual uniform types and dataset paths.
+#
+# Dataset structure:
+#   dataset/
+#     images/
+#       train/     ← training photos
+#       val/       ← validation photos
+#     labels/
+#       train/     ← YOLO format .txt labels for training
+#       val/       ← YOLO format .txt labels for validation
+#
+# Label format (per image):
+#   <class_id> <x_center> <y_center> <width> <height>
+#   All values normalized to 0-1 (relative to image dimensions).
+#
+# Use Roboflow (roboflow.com) to label your images easily.
+
+path: .  # Root dataset path (relative to this file)
+train: images/train
+val: images/val
+
+# Class names — MUST match the order in your training script
+# and the class_id values in database/migrations/002_uniform_types.sql
+names:
+  0: BSIT_Uniform
+  1: CHM_Uniform
+  2: COAGRI_Uniform
+  3: Education_Uniform

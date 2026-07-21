@@ -1,0 +1,29 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "globalDependencies": [".env.example"],
+  "pipeline": {
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": [".next/**", "!.next/cache/**"],
+      "inputs": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.json", "public/**/*", "next.config.js", "tailwind.config.js", "postcss.config.js"]
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck"],
+      "outputs": ["tsconfig.tsbuildinfo"],
+      "inputs": ["src/**/*.ts", "src/**/*.tsx", "tsconfig.json"]
+    },
+    "lint": {
+      "dependsOn": [],
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["build"],
+      "outputs": [],
+      "inputs": ["src/**/*.test.ts", "src/**/*.test.tsx", "vitest.config.ts"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    }
+  }
+}

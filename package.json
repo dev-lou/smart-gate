@@ -1,0 +1,31 @@
+{
+  "name": "smart-gate-system",
+  "version": "3.0.0",
+  "private": true,
+  "description": "Smart School Gate System - In-Browser Face Recognition & Uniform Detection with Tablet Kiosk PWA",
+  "packageManager": "pnpm@9.15.4",
+  "scripts": {
+    "dev:dashboard": "pnpm --filter @smart-gate/dashboard dev",
+    "dev:guard": "pnpm --filter @smart-gate/guard dev",
+    "dev:kiosk": "pnpm --filter @smart-gate/kiosk dev",
+    "dev": "pnpm dev:dashboard & pnpm dev:guard & pnpm dev:kiosk",
+    "build:dashboard": "pnpm --filter @smart-gate/dashboard build",
+    "build:guard": "pnpm --filter @smart-gate/guard build",
+    "build:kiosk": "pnpm --filter @smart-gate/kiosk build",
+    "build": "pnpm build:dashboard && pnpm build:guard && pnpm build:kiosk",
+    "lint": "pnpm --recursive lint",
+    "typecheck": "pnpm --recursive typecheck",
+    "setup": "pnpm install",
+    "clean": "rm -rf node_modules packages/*/node_modules services/*/node_modules services/*/.next",
+    "format": "prettier --write \"services/**/*.{ts,tsx,js,json,css}\""
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0",
+    "typescript": "^5.3.3",
+    "prettier": "^3.2.0"
+  }
+}

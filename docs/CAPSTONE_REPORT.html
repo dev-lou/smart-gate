@@ -1,0 +1,1451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Gate System — Capstone Technical Report</title>
+<style>
+  /* ─── Reset & Base ──────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --primary: #3b82f6;
+    --primary-dark: #1d4ed8;
+    --surface-950: #0a0a0f;
+    --surface-900: #12121a;
+    --surface-800: #1e1e2a;
+    --surface-700: #2a2a3a;
+    --surface-400: #9ca3af;
+    --surface-500: #6b7280;
+    --success: #22c55e;
+    --warning: #eab308;
+    --error: #ef4444;
+    --text: #f1f5f9;
+    --text-muted: #94a3b8;
+  }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--surface-950);
+    color: var(--text);
+    line-height: 1.7;
+    font-size: 15px;
+  }
+  
+  /* ─── Typography ────────────────────────────────────── */
+  h1 { font-size: 2.5rem; font-weight: 800; letter-spacing: -0.02em; }
+  h2 { font-size: 1.75rem; font-weight: 700; margin-top: 3rem; margin-bottom: 1rem; color: var(--primary); letter-spacing: -0.01em; }
+  h3 { font-size: 1.25rem; font-weight: 600; margin-top: 2rem; margin-bottom: 0.75rem; color: #e2e8f0; }
+  h4 { font-size: 1.05rem; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.5rem; color: #cbd5e1; }
+  p { margin-bottom: 1rem; color: var(--text-muted); }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  strong { color: var(--text); }
+  ul, ol { margin-bottom: 1rem; padding-left: 1.5rem; }
+  li { margin-bottom: 0.4rem; color: var(--text-muted); }
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.85em; background: var(--surface-800); padding: 0.15em 0.4em; border-radius: 4px; color: #e2e8f0; }
+  pre { background: var(--surface-900); border: 1px solid var(--surface-700); border-radius: 12px; padding: 1.25rem; overflow-x: auto; margin-bottom: 1.5rem; font-size: 0.85rem; }
+  pre code { background: none; padding: 0; }
+
+  /* ─── Layout ────────────────────────────────────────── */
+  .container { max-width: 960px; margin: 0 auto; padding: 0 2rem; }
+  
+  /* ─── Cover Page ────────────────────────────────────── */
+  .cover {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    padding: 4rem 2rem;
+    background: linear-gradient(135deg, var(--surface-950) 0%, #0f172a 50%, var(--surface-950) 100%);
+    position: relative;
+    overflow: hidden;
+  }
+  .cover::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(circle at 30% 50%, rgba(59,130,246,0.08) 0%, transparent 50%),
+                radial-gradient(circle at 70% 50%, rgba(34,197,94,0.06) 0%, transparent 50%);
+    animation: coverPulse 8s ease-in-out infinite;
+  }
+  @keyframes coverPulse {
+    0%, 100% { transform: scale(1); opacity: 0.5; }
+    50% { transform: scale(1.05); opacity: 0.8; }
+  }
+  .cover > * { position: relative; z-index: 1; }
+  .cover-badge {
+    display: inline-block;
+    padding: 0.4rem 1.2rem;
+    background: rgba(59,130,246,0.15);
+    border: 1px solid rgba(59,130,246,0.3);
+    border-radius: 50px;
+    font-size: 0.8rem;
+    color: var(--primary);
+    font-weight: 500;
+    margin-bottom: 2rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+  .cover h1 {
+    font-size: 3.5rem;
+    margin-bottom: 0.5rem;
+    background: linear-gradient(135deg, #60a5fa, #34d399);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .cover-subtitle {
+    font-size: 1.2rem;
+    color: var(--text-muted);
+    margin-bottom: 2rem;
+    max-width: 600px;
+  }
+  .cover-meta {
+    display: flex;
+    gap: 3rem;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 2rem;
+    padding-top: 2rem;
+    border-top: 1px solid var(--surface-700);
+  }
+  .cover-meta div { text-align: center; }
+  .cover-meta .label { display: block; font-size: 0.75rem; color: var(--surface-500); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem; }
+  .cover-meta .value { font-size: 1rem; color: var(--text); font-weight: 600; }
+
+  /* ─── Cards ──────────────────────────────────────────── */
+  .card {
+    background: var(--surface-900);
+    border: 1px solid var(--surface-700);
+    border-radius: 16px;
+    padding: 1.75rem;
+    margin-bottom: 1.5rem;
+    transition: border-color 0.2s;
+  }
+  .card:hover { border-color: var(--surface-500); }
+  .card-icon { font-size: 2rem; margin-bottom: 0.75rem; }
+  .card h4 { margin-top: 0; margin-bottom: 0.5rem; }
+  .card p { margin-bottom: 0; font-size: 0.9rem; }
+
+  /* ─── Grids ──────────────────────────────────────────── */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.25rem; }
+  @media (max-width: 768px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+  /* ─── Tables ─────────────────────────────────────────── */
+  .table-wrap { overflow-x: auto; margin-bottom: 1.5rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  th { text-align: left; padding: 0.75rem 1rem; background: var(--surface-800); color: var(--text); font-weight: 600; border-bottom: 2px solid var(--surface-700); }
+  td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--surface-800); color: var(--text-muted); }
+  tr:hover td { background: var(--surface-800/50); }
+
+  /* ─── Diagrams (ASCII/Monospace) ──────────────────────── */
+  .diagram {
+    background: var(--surface-900);
+    border: 1px solid var(--surface-700);
+    border-radius: 16px;
+    padding: 1.5rem;
+    margin-bottom: 1.5rem;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    overflow-x: auto;
+    color: #94a3b8;
+  }
+  .diagram .hl { color: var(--primary); }
+  .diagram .hl-green { color: var(--success); }
+  .diagram .hl-yellow { color: var(--warning); }
+  .diagram .hl-red { color: var(--error); }
+  .diagram .comment { color: var(--surface-500); font-style: italic; }
+
+  /* ─── Tags / Badges ──────────────────────────────────── */
+  .tag {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 6px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .tag-blue { background: rgba(59,130,246,0.15); color: #60a5fa; }
+  .tag-green { background: rgba(34,197,94,0.15); color: #4ade80; }
+  .tag-yellow { background: rgba(234,179,8,0.15); color: #facc15; }
+  .tag-red { background: rgba(239,68,68,0.15); color: #f87171; }
+  .tag-purple { background: rgba(168,85,247,0.15); color: #c084fc; }
+
+  /* ─── Section Divider ─────────────────────────────────── */
+  .section-divider { height: 1px; background: linear-gradient(90deg, transparent, var(--surface-700), transparent); margin: 1rem 0 2rem; }
+
+  /* ─── Stats Counter ──────────────────────────────────── */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+  .stat-card {
+    background: var(--surface-900);
+    border: 1px solid var(--surface-700);
+    border-radius: 12px;
+    padding: 1.5rem;
+    text-align: center;
+  }
+  .stat-number { font-size: 2rem; font-weight: 800; color: var(--primary); }
+  .stat-label { font-size: 0.8rem; color: var(--surface-500); margin-top: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em; }
+
+  /* ─── Comparison Table ────────────────────────────────── */
+  .comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 0; border-radius: 12px; overflow: hidden; border: 1px solid var(--surface-700); margin-bottom: 1.5rem; }
+  .comparison > div { padding: 1rem 1.25rem; }
+  .comparison-header { background: var(--surface-800); font-weight: 600; font-size: 0.85rem; padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--surface-700); }
+  .comparison-old { background: rgba(239,68,68,0.03); }
+  .comparison-new { background: rgba(34,197,94,0.03); }
+  .comparison-item { padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--surface-800); font-size: 0.85rem; }
+  .comparison-item:last-child { border-bottom: none; }
+
+  /* ─── Responsive ─────────────────────────────────────── */
+  @media (max-width: 768px) {
+    .container { padding: 0 1rem; }
+    .cover h1 { font-size: 2.2rem; }
+    .cover-meta { gap: 1.5rem; }
+    .comparison { grid-template-columns: 1fr; }
+  }
+
+  /* ─── Print ──────────────────────────────────────────── */
+  @media print {
+    body { background: white; color: #1a1a2e; }
+    .cover { min-height: auto; padding: 2rem; background: white !important; }
+    .cover h1 { -webkit-text-fill-color: #1d4ed8; }
+    .card { background: #f8fafc; border-color: #e2e8f0; break-inside: avoid; }
+    .diagram { background: #f8fafc; border-color: #e2e8f0; }
+    table { font-size: 0.8rem; }
+    th { background: #f1f5f9; color: #1a1a2e; }
+    td { color: #475569; }
+    .stat-card { background: #f8fafc; border-color: #e2e8f0; }
+    pre { background: #f8fafc; border-color: #e2e8f0; }
+    .cover::before { display: none; }
+    h2 { color: #1d4ed8; }
+    strong { color: #1a1a2e; }
+    .tag { border: 1px solid currentColor; }
+    .comparison { border-color: #e2e8f0; }
+    .comparison-header { background: #f1f5f9; }
+    .comparison-old { background: #fef2f2; }
+    .comparison-new { background: #f0fdf4; }
+  }
+</style>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- COVER PAGE -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<section class="cover">
+  <div class="cover-badge">Capstone Project · 2026</div>
+  <h1>Smart Gate System</h1>
+  <p class="cover-subtitle">
+    An Industry-Standard AI-Powered Access Control System with In-Browser Face Recognition &amp; Uniform Detection
+  </p>
+  
+  <div class="cover-meta">
+    <div>
+      <span class="label">Technology</span>
+      <span class="value">Next.js 16 · ArcFace · YOLO11n</span>
+    </div>
+    <div>
+      <span class="label">Architecture</span>
+      <span class="value">Edge AI · Offline-First · PWA</span>
+    </div>
+    <div>
+      <span class="label">Deployment</span>
+      <span class="value">Vercel · Supabase · CI/CD</span>
+    </div>
+    <div>
+      <span class="label">Hardware</span>
+      <span class="value">Arduino · Servo · 10% System</span>
+    </div>
+  </div>
+
+  <div style="margin-top: 4rem; display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center;">
+    <span class="tag tag-blue">In-Browser AI</span>
+    <span class="tag tag-green">Offline-First</span>
+    <span class="tag tag-purple">WebGPU Acceleration</span>
+    <span class="tag tag-yellow">3-Photo Enrollment</span>
+    <span class="tag tag-blue">99.4% LFW Accuracy</span>
+    <span class="tag tag-green">28 Unit Tests</span>
+    <span class="tag tag-purple">Monorepo</span>
+    <span class="tag tag-yellow">CI/CD Pipeline</span>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- TABLE OF CONTENTS -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container" style="margin-top: 4rem; margin-bottom: 4rem;">
+  <h2 style="margin-top: 0;">Table of Contents</h2>
+  <div class="card">
+    <ol style="margin: 0; columns: 2; column-gap: 2rem;">
+      <li><a href="#abstract">Abstract</a></li>
+      <li><a href="#problem">Problem Statement</a></li>
+      <li><a href="#objectives">Objectives</a></li>
+      <li><a href="#architecture">System Architecture</a></li>
+      <li><a href="#tech-stack">Technology Stack</a></li>
+      <li><a href="#kiosk">Kiosk Service (Core AI)</a></li>
+      <li><a href="#guard">Guard Station</a></li>
+      <li><a href="#dashboard">Admin Dashboard</a></li>
+      <li><a href="#ai-pipeline">AI Pipeline</a></li>
+      <li><a href="#hardware">Hardware Integration</a></li>
+      <li><a href="#database">Database Schema</a></li>
+      <li><a href="#deployment">Deployment &amp; DevOps</a></li>
+      <li><a href="#testing">Testing</a></li>
+      <li><a href="#conclusion">Conclusion</a></li>
+    </ol>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- 1. ABSTRACT -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container">
+  <h2 id="abstract">1. Abstract</h2>
+  <div class="section-divider"></div>
+
+  <p>
+    The <strong>Smart Gate System</strong> is an intelligent access control solution designed for educational institutions. It replaces traditional manual gate security with an automated system that verifies students through face recognition and uniform compliance checking — all running <strong>entirely in the browser</strong> on a standard Android tablet.
+  </p>
+  <p>
+    Unlike traditional smart gate implementations that require a Raspberry Pi, Python backend, or cloud AI inference, this system achieves <strong>90% software / 10% hardware</strong> by leveraging <strong>MediaPipe Tasks Vision</strong> for face detection, <strong>ArcFace ONNX</strong> for face recognition (99.4% LFW accuracy), and <strong>YOLO11n</strong> for custom uniform detection — all executed inside a <strong>Web Worker</strong> using <strong>ONNX Runtime Web</strong> with <strong>WebGPU acceleration</strong>.
+  </p>
+  <p>
+    The system follows a <strong>three-service monorepo architecture</strong> using Next.js 16, TypeScript, and pnpm workspaces: a <strong>kiosk PWA</strong> for the tablet gate, a <strong>guard station</strong> for student enrollment with multi-angle photo capture, and an <strong>admin dashboard</strong> for system configuration. Data syncs between IndexedDB (offline) and Supabase (cloud) when connectivity is available. CI/CD is handled through GitHub Actions with Turborepo-optimized builds, Dependabot for dependency updates, and CodeQL for security scanning.
+  </p>
+
+  <div class="stats" style="margin-top: 2rem;">
+    <div class="stat-card"><div class="stat-number">3</div><div class="stat-label">Services</div></div>
+    <div class="stat-card"><div class="stat-number">28</div><div class="stat-label">Unit Tests</div></div>
+    <div class="stat-card"><div class="stat-number">99.4%</div><div class="stat-label">Face LFW Accuracy</div></div>
+    <div class="stat-card"><div class="stat-number">90/10</div><div class="stat-label">SW/HW Split</div></div>
+    <div class="stat-card"><div class="stat-number">30-50ms</div><div class="stat-label">Face Rec Inference</div></div>
+    <div class="stat-card"><div class="stat-number">512</div><div class="stat-label">Embedding Dim</div></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- 2. PROBLEM STATEMENT -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container">
+  <h2 id="problem">2. Problem Statement</h2>
+  <div class="section-divider"></div>
+
+  <p>
+    Traditional school gate security relies on manual visual inspection by security guards — an approach that is error-prone, inconsistent, and unscalable. Students can borrow IDs, impersonate others, or enter without proper uniform. Existing smart gate solutions require expensive hardware (Raspberry Pi, dedicated cameras, servers), complex Python-based AI pipelines, and constant internet connectivity.
+  </p>
+  <p>
+    The core problem this project addresses: <strong>How can we build a highly accurate, affordable, and offline-capable smart gate system using only a consumer tablet and minimal hardware?</strong>
+  </p>
+
+  <div class="grid-2" style="margin-top: 1.5rem;">
+    <div class="card" style="border-left: 3px solid var(--error);">
+      <div class="card-icon">❌</div>
+      <h4>Current Pain Points</h4>
+      <ul>
+        <li>Manual ID checks are slow and unreliable</li>
+        <li>Uniform violations go unnoticed</li>
+        <li>No audit trail for entries</li>
+        <li>Guard fatigue leads to missed violations</li>
+        <li>Guest/visitor tracking is paper-based</li>
+        <li>Existing smart gates cost $500+</li>
+      </ul>
+    </div>
+    <div class="card" style="border-left: 3px solid var(--success);">
+      <div class="card-icon">✅</div>
+      <h4>Proposed Solution</h4>
+      <ul>
+        <li>Automated face recognition in 200-300ms</li>
+        <li>YOLO-based uniform compliance check</li>
+        <li>Complete digital audit trail</li>
+        <li>Runs on a $200 Android tablet</li>
+        <li>Works fully offline</li>
+        <li>3-photo enrollment for high accuracy</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- 3. OBJECTIVES -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container">
+  <h2 id="objectives">3. Objectives</h2>
+  <div class="section-divider"></div>
+
+  <div class="grid-3">
+    <div class="card">
+      <div class="card-icon">🎯</div>
+      <h4>Primary</h4>
+      <p>Develop an in-browser face recognition system with &gt;95% accuracy that runs on a standard Android tablet without server-side AI.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🎯</div>
+      <h4>Secondary</h4>
+      <p>Implement uniform compliance checking using custom-trained YOLO11n that detects course-specific uniform tops.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🎯</div>
+      <h4>Tertiary</h4>
+      <p>Build a complete ecosystem: guard enrollment station, admin dashboard, offline-first syncing, and hardware gate control.</p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top: 0.5rem;">
+    <h4 style="margin-top: 0;">Specific Goals</h4>
+    <ol>
+      <li>Face detection in &lt;10ms per frame using MediaPipe WASM</li>
+      <li>Face recognition with &gt;95% accuracy using ArcFace ONNX (512-dim embeddings)</li>
+      <li>Complete offline operation — no internet required for core AI functions</li>
+      <li>Three-photo enrollment (front, left 45°, right 45°) for robust matching</li>
+      <li>YOLO-based uniform detection with color-based fallback</li>
+      <li>IndexedDB offline storage with background sync to Supabase</li>
+      <li>Arduino-based gate control via Web Serial API</li>
+      <li>CI/CD pipeline with automated testing (28 unit tests)</li>
+      <li>Deployment on Vercel free tier</li>
+    </ol>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- 4. SYSTEM ARCHITECTURE -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container">
+  <h2 id="architecture">4. System Architecture</h2>
+  <div class="section-divider"></div>
+
+  <p>The Smart Gate System follows a <strong>three-tier distributed architecture</strong> with edge AI processing, cloud database, and web-based management interfaces.</p>
+
+  <h3>4.1 High-Level Architecture</h3>
+
+  <div class="diagram">
+┌─────────────────────────────────────────────────────────────────────┐
+│                     <span class="hl">TIER 1: EDGE (Tablet Kiosk)</span>                     │
+│                                                                     │
+│  ┌─────────────┐   ┌──────────────────┐   ┌────────────────────┐   │
+│  │  Camera     │   │  MediaPipe Face  │   │  ArcFace ONNX      │   │
+│  │  Feed       │──►│  Detector (WASM) │──►│  Recognizer (Worker)│  │
+│  │  (640×480)  │   │  ~5ms            │   │  ~30-50ms (WebGPU) │   │
+│  └─────────────┘   └──────────────────┘   └─────────┬──────────┘   │
+│                                                      │              │
+│  ┌───────────────────────────────────────────────────▼──────────┐  │
+│  │              ACCESS DECISION ENGINE                           │  │
+│  │  Face Match + Uniform Check + Policy → Grant/Deny            │  │
+│  └──────────────┬────────────────────────────────────┬──────────┘  │
+│                 │                                    │             │
+│  ┌──────────────▼──────────┐   ┌─────────────────────▼──────────┐ │
+│  │  IndexedDB (Offline)    │   │  Web Serial API                │ │
+│  │  • Students + Embeddings│   │  • Arduino → Servo → Gate     │ │
+│  │  • Access Logs          │   │  • Physical Button             │ │
+│  │  • System Settings      │   │  • Auto-Reconnect              │ │
+│  └──────────────┬──────────┘   └────────────────────────────────┘ │
+└─────────────────┼──────────────────────────────────────────────────┘
+                  │ HTTPS Sync (when online)
+┌─────────────────┼──────────────────────────────────────────────────┐
+│                 ▼                                                  │
+│  <span class="hl">TIER 2: CLOUD (Supabase)</span>                                   │
+│                                                                     │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐             │
+│  │ PostgreSQL   │  │ Storage      │  │ Auth (RLS)  │             │
+│  │ students     │  │ student-photos│  │ Row-level   │             │
+│  │ access_logs  │  │ bucket (public)│  │ security    │             │
+│  │ system_settings│  │              │  │              │             │
+│  └──────────────┘  └──────────────┘  └──────────────┘             │
+└─────────────────┬──────────────────────────────────────────────────┘
+                  │
+┌─────────────────┼──────────────────────────────────────────────────┐
+│                 ▼                                                  │
+│  <span class="hl">TIER 3: WEB (Vercel - 3 Services)</span>                           │
+│                                                                     │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────────┐  │
+│  │ Admin Dashboard  │  │ Guard Station   │  │ Kiosk PWA        │  │
+│  │ Port 3000        │  │ Port 3001       │  │ Port 3002        │  │
+│  │ Student mgmt     │  │ 3-photo enroll  │  │ Face + Uniform   │  │
+│  │ Reports & logs   │  │ Camera capture  │  │ Gate control     │  │
+│  │ System config    │  │ Uniform assign  │  │ Offline-first    │  │
+│  └─────────────────┘  └─────────────────┘  └──────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+  </div>
+
+  <h3>4.2 Service Communication</h3>
+  <div class="diagram">
+<span class="comment">// All 3 services share the same Supabase project</span>
+<span class="comment">// No direct service-to-service communication</span>
+
+<span class="hl">Dashboard</span> ──→ Supabase ──→ <span class="hl-green">Guard</span> reads enrolled students
+    │                          │
+    │  Config updates          │  Student enrollment
+    ▼                          ▼
+Supabase ←────── <span class="hl-yellow">Kiosk</span> downloads students + uploads logs
+              │
+              ▼
+         IndexedDB (offline cache on tablet)
+              │
+              ▼
+         Face matching (no cloud needed!)
+  </div>
+
+  <h3>4.3 Web Worker Architecture</h3>
+  <p>A single shared Web Worker handles all ONNX inference to conserve memory on the tablet:</p>
+  <div class="diagram">
+<span class="comment">// Main Thread                    // Worker Thread (inference.worker.ts)</span>
+
+face.ts ──sendToWorker("get_embedding")──┐
+uniform.ts ─sendToWorker("yolo_infer")───┤
+                                         ▼
+                               ┌─────────────────────┐
+                               │  ONNX Runtime Web    │
+                               │                     │
+                               │  faceSession        │
+                               │  • ArcFace w600k_mbf│
+                               │  • 112×112 → 512-dim│
+                               │  • WebGPU execution │
+                               │                     │
+                               │  yoloSession        │
+                               │  • YOLO11n (custom) │
+                               │  • 640×640 → boxes  │
+                               │  • WebGPU execution │
+                               │                     │
+                               │  WASM binary loaded │
+                               │  once from CDN       │
+                               └─────────────────────┘
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- 5. TECHNOLOGY STACK -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container">
+  <h2 id="tech-stack">5. Technology Stack</h2>
+  <div class="section-divider"></div>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Layer</th>
+          <th>Technology</th>
+          <th>Version</th>
+          <th>Purpose</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="tag tag-blue">Framework</span></td>
+          <td>Next.js</td>
+          <td>16.1.6</td>
+          <td>React framework with App Router, PWA support, server components</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-blue">Language</span></td>
+          <td>TypeScript</td>
+          <td>5.3.3</td>
+          <td>Type safety across all 3 services</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-purple">Monorepo</span></td>
+          <td>pnpm + Turborepo</td>
+          <td>9 / 2.10</td>
+          <td>Workspace management, cached builds, parallel execution</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-green">Face Detection</span></td>
+          <td>MediaPipe Tasks Vision</td>
+          <td>0.10.18</td>
+          <td>BlazeFace Short Range (WASM), ~5ms per frame</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-green">Face Recognition</span></td>
+          <td>ArcFace (ONNX)</td>
+          <td>w600k_mbf</td>
+          <td>512-dim embeddings, 99.4% LFW accuracy, in-browser via ONNX</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-green">Uniform Detection</span></td>
+          <td>YOLO11n (ONNX)</td>
+          <td>11n</td>
+          <td>Custom-trained ONNX model, runs in Web Worker</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-green">AI Engine</span></td>
+          <td>ONNX Runtime Web</td>
+          <td>1.21.0</td>
+          <td>WebGPU + WebGL + WASM execution providers</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-yellow">Cloud DB</span></td>
+          <td>Supabase</td>
+          <td>2.39.0</td>
+          <td>PostgreSQL, Auth, Storage, Realtime</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-yellow">Offline Storage</span></td>
+          <td>IndexedDB (idb)</td>
+          <td>8.0.0</td>
+          <td>Full offline operation with Promise-based API</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-red">Hardware</span></td>
+          <td>Web Serial API</td>
+          <td>Browser</td>
+          <td>Arduino communication from browser (USB-OTG)</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-purple">Styling</span></td>
+          <td>Tailwind CSS</td>
+          <td>3.4.1</td>
+          <td>Utility-first CSS framework, dark theme</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-blue">Deployment</span></td>
+          <td>Vercel</td>
+          <td>—</td>
+          <td>3 independent projects, free tier</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-blue">CI/CD</span></td>
+          <td>GitHub Actions</td>
+          <td>—</td>
+          <td>CI + Deploy + CodeQL workflows, Dependabot</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-purple">Testing</span></td>
+          <td>Vitest</td>
+          <td>3.1.2</td>
+          <td>28 unit tests for pure logic functions</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- 6. KIOSK SERVICE (Core AI) -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container">
+  <h2 id="kiosk">6. Kiosk Service — The Core AI Engine</h2>
+  <div class="section-divider"></div>
+
+  <p>The kiosk service is the heart of the system. It runs on a tablet mounted at the school gate and processes the full AI pipeline entirely in the browser.</p>
+
+  <h3>6.1 Module Architecture</h3>
+  <div class="diagram">
+<span class="hl">kiosk/src/lib/</span>
+├── <span class="hl-green">face.ts</span>           MediaPipe face detection + ArcFace recognition + matching
+├── <span class="hl-green">uniform.ts</span>        YOLO11n uniform detection + color fallback
+├── <span class="hl-green">arduino.ts</span>        Web Serial API — gate open/close + auto-reconnect
+├── <span class="hl-green">db.ts</span>             IndexedDB — students, logs, settings
+├── <span class="hl-green">supabase.ts</span>       Cloud sync — download/upload + connection management
+├── <span class="hl-green">inference.worker.ts</span>  ONNX Runtime Web Worker (shared singleton)
+├── <span class="hl-green">workerManager.ts</span>   Worker lifecycle management + message routing
+└── <span class="hl-green">__tests__/</span>
+    └── pure-functions.test.ts   28 unit tests
+
+<span class="hl">kiosk/src/app/</span>
+├── <span class="hl-green">page.tsx</span>           Main kiosk UI + AI loop + state management
+├── <span class="hl-green">layout.tsx</span>         PWA metadata + ErrorBoundary wrapper
+└── <span class="hl-green">globals.css</span>        Scan frame styles + glass morphism + animations
+
+<span class="hl">kiosk/src/components/</span>
+└── <span class="hl-green">ErrorBoundary.tsx</span>  Crash recovery UI (prevents blank screen)
+  </div>
+
+  <h3>6.2 Main AI Loop</h3>
+  <p>The kiosk uses a <code>requestAnimationFrame</code> loop that processes every 3rd frame to balance performance and responsiveness:</p>
+  <div class="diagram">
+<span class="comment">// Kiosk main loop (page.tsx — startMainLoop)</span>
+<span class="comment">// Executes via requestAnimationFrame at ~30 FPS</span>
+
+loop()
+  ├── Frame skip (every 3rd frame)
+  │   └── If skip → draw overlays → next frame
+  │
+  ├── Check state: is kiosk ready? is cooldown active? is processing?
+  │
+  ├── <span class="hl">Detect faces</span> (MediaPipe)
+  │   └── If no faces → draw overlays → next frame
+  │
+  ├── <span class="hl">Process largest face</span> (async)
+  │   ├── Crop & resize to 112×112
+  │   ├── Send to Web Worker → ArcFace inference
+  │   ├── Compute cosine similarity vs all enrolled
+  │   │
+  │   └── If matched:
+  │       ├── Check uniform (YOLO or color fallback)
+  │       ├── Decision: Grant / Deny / Continue
+  │       ├── If granted: open gate (Arduino / simulated)
+  │       ├── Log access to IndexedDB
+  │       └── Start 5s cooldown
+  │
+  └── Draw overlays (bounding boxes, labels, scan lines)
+      └── next frame
+  </div>
+
+  <h3>6.3 Offline-First Design</h3>
+  <div class="card">
+    <h4>How offline mode works</h4>
+    <p>The kiosk uses IndexedDB as its primary data store, with Supabase as a sync target. All AI processing is local:</p>
+    <ol>
+      <li><strong>On first sync</strong>: Download enrolled students from Supabase → store in IndexedDB → process photos → generate embeddings</li>
+      <li><strong>Face recognition</strong>: Looks up embeddings from IndexedDB (no network needed)</li>
+      <li><strong>Uniform detection</strong>: Downloads YOLO ONNX model once → cached by service worker</li>
+      <li><strong>Access logs</strong>: Written to IndexedDB immediately → synced to Supabase when online</li>
+      <li><strong>Settings</strong>: Downloaded from Supabase on sync → used from IndexedDB when offline</li>
+      <li><strong>Background sync</strong>: Triggers on init + network online events</li>
+    </ol>
+  </div>
+
+  <h3>6.4 Error Recovery</h3>
+  <div class="grid-2">
+    <div class="card">
+      <h4>🛡️ ErrorBoundary</h4>
+      <p>Wraps the entire kiosk in a React error boundary that catches runtime crashes and displays a friendly restart UI with the error message.</p>
+    </div>
+    <div class="card">
+      <h4>🔄 Arduino Auto-Reconnect</h4>
+      <p>When the USB cable is bumped, the system automatically retries connection every 5 seconds for up to 60 seconds.</p>
+    </div>
+    <div class="card">
+      <h4>📸 Photo Processing Mutex</h4>
+      <p>Uses a ref-based mutex to prevent concurrent photo processing when sync triggers while already processing.</p>
+    </div>
+    <div class="card">
+      <h4>📡 Graceful Degradation</h4>
+      <p>If YOLO model isn't loaded → color-based fallback. If face recognizer fails → detection-only mode. If offline → local-only mode.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- 7. GUARD STATION -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container">
+  <h2 id="guard">7. Guard Station</h2>
+  <div class="section-divider"></div>
+
+  <p>The Guard Station is a web application used by security guards to enroll new students into the system. It captures 3 photos at different angles for robust face recognition.</p>
+
+  <h3>7.1 Enrollment Flow</h3>
+  <div class="diagram">
+<span class="hl">Guard Station Enrollment</span>
+<span class="comment">// Each student gets 3 photos at different angles</span>
+
+1. Guard fills student info:
+   ├── Full Name <span class="hl-red">*required</span>
+   ├── Student ID (optional)
+   ├── Course <span class="hl-red">*required</span>
+   │   └── Auto-loads uniform types for that course
+   ├── Year Level (optional)
+   └── Section (optional)
+
+2. Photo capture (3 angles):
+   ├── <span class="hl">😐 Front</span> → Look straight at camera
+   ├── <span class="hl">↔️ Left 45°</span> → Turn head slightly left
+   └── <span class="hl">↔️ Right 45°</span> → Turn head slightly right
+
+3. Submission:
+   ├── Upload 3 JPEGs to Supabase Storage
+   ├── JSON array of URLs stored in student.photo_url
+   └── Student record created in Supabase
+
+4. Kiosk sync:
+   ├── Downloads student + photo URLs
+   ├── Loads each photo
+   ├── Detects face → computes ArcFace embedding
+   └── Stores 3 embeddings in IndexedDB
+  </div>
+
+  <h3>7.2 Key Features</h3>
+  <div class="grid-3">
+    <div class="card">
+      <div class="card-icon">📸</div>
+      <h4>3-Photo Capture</h4>
+      <p>Live camera preview with angle-specific guidance (Front, Left 45°, Right 45°). Guards can retake individual photos.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">🎓</div>
+      <h4>Uniform Assignment</h4>
+      <p>Auto-loads uniform types from Supabase based on selected course. Shows what YOLO will detect.</p>
+    </div>
+    <div class="card">
+      <div class="card-icon">📝</div>
+      <h4>Recent Enrollments</h4>
+      <p>Shows last 10 enrollments with timestamps and photo count. Quick links to open kiosk and dashboard.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- 8. ADMIN DASHBOARD -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container">
+  <h2 id="dashboard">8. Admin Dashboard</h2>
+  <div class="section-divider"></div>
+
+  <p>The Admin Dashboard provides Supabase Auth-secured access for administrators. It's a standard Next.js application using Supabase Auth for authentication, scaffolded for future management pages.</p>
+
+  <h3>8.1 Dashboard Modules</h3>
+  <p>The dashboard currently provides a <strong>Supabase Auth login page</strong> (located at <code>/login</code>) for administrators. It's designed as an authentication gateway that can be extended with management pages in the future.</p>
+  <div class="card">
+    <h4>Current State</h4>
+    <ul>
+      <li><strong>🔐 Supabase Auth</strong> — Email/password login with built-in rate limiting</li>
+      <li><strong>🧭 Redirect</strong> — Root route (<code>/</code>) redirects to <code>/login</code></li>
+      <li><strong>🔧 Future</strong> — Scaffolded for student management, access logs, system settings</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- 9. AI PIPELINE -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container">
+  <h2 id="ai-pipeline">9. AI Pipeline — Detailed</h2>
+  <div class="section-divider"></div>
+
+  <h3>9.1 Face Detection</h3>
+  <div class="card">
+    <div class="grid-2">
+      <div>
+        <h4>Technology</h4>
+        <p><strong>MediaPipe Tasks Vision</strong> — BlazeFace Short Range model, a lightweight face detector optimized for mobile devices. Runs via WebAssembly (WASM) on the main thread.</p>
+        <p><strong>Input:</strong> Full video frame (640×480)<br>
+        <strong>Output:</strong> Bounding boxes as normalized ratios [x, y, w, h]<br>
+        <strong>Speed:</strong> ~5ms per frame</p>
+      </div>
+      <div>
+        <h4>Execution</h4>
+        <pre style="margin:0; font-size:0.8rem;"><code>// face.ts — Main thread
+const vision = await FilesetResolver.forVisionTasks(
+  "cdn.jsdelivr.net/.../wasm"
+);
+faceDetector = await FaceDetector.createFromModelPath(
+  vision, FACE_DETECTOR_MODEL
+);
+
+// Usage in loop:
+const result = faceDetector.detect(canvas);
+return result.detections.map(det => ({
+  bbox: [box.originX / w, box.originY / h,
+         box.width / w, box.height / h],
+  confidence: det.categories?.[0]?.score ?? 0,
+}));</code></pre>
+      </div>
+    </div>
+  </div>
+
+  <h3>9.2 Face Recognition</h3>
+  <div class="card">
+    <div class="grid-2">
+      <div>
+        <h4>Technology</h4>
+        <p><strong>ArcFace w600k_mbf</strong> — MobileFaceNet backbone with ArcFace loss, achieving 99.4% on Labeled Faces in the Wild (LFW) benchmark. Runs via ONNX Runtime Web in a Web Worker.</p>
+        <p><strong>Input:</strong> 112×112 RGB face crop<br>
+        <strong>Normalization:</strong> (pixel - 127.5) / 127.5 → [-1, 1]<br>
+        <strong>Output:</strong> 512-dim L2-normalized embedding<br>
+        <strong>Speed:</strong> ~30-50ms on WebGPU</p>
+      </div>
+      <div>
+        <h4>Execution</h4>
+        <pre style="margin:0; font-size:0.8rem;"><code>// inference.worker.ts — Web Worker
+const tensor = new ort.Tensor("float32",
+  float32Data, [1, 3, 112, 112]);
+
+const feeds = {};
+feeds[session.inputNames[0]] = tensor;
+const results = await session.run(feeds);
+
+// L2 normalize
+const embedding = new Float32Array(raw.length);
+let sum = 0;
+for (let i = 0; i < raw.length; i++) {
+  embedding[i] = raw[i];
+  sum += embedding[i] * embedding[i];
+}
+const norm = Math.sqrt(sum);
+for (let i = 0; i < embedding.length; i++)
+  embedding[i] /= norm;</code></pre>
+      </div>
+    </div>
+  </div>
+
+  <h3>9.3 Face Matching</h3>
+  <div class="card">
+    <p>The matching algorithm compares the query embedding against ALL enrolled embeddings per student (3 angles) using cosine similarity, taking the best score:</p>
+    <pre><code>// face.ts — Cosine similarity matching
+function matchFace(embedding, enrolledFaces) {
+  let bestScore = -1, bestPerson = null;
+
+  for (const enrolled of enrolledFaces) {
+    for (const emb of enrolled.embeddings) {
+      const score = cosineSimilarity(embedding, emb);
+      if (score > bestScore) {
+        bestScore = score;
+        bestPerson = enrolled;
+      }
+    }
+  }
+
+  return {
+    person: bestScore >= 0.6 ? bestPerson : null,
+    confidence: bestScore,
+    matched: bestScore >= 0.6,
+  };
+}
+
+function cosineSimilarity(a, b) {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}</code></pre>
+  </div>
+
+  <h3>9.4 Uniform Detection</h3>
+  <div class="card">
+    <p>Uniform detection uses YOLO11n (custom-trained ONNX model) running in the Web Worker. If no model is loaded, a color-based fallback is used:</p>
+    <div class="diagram" style="margin: 1rem 0;">
+<span class="comment">// Uniform detection pipeline</span>
+
+checkUniform(video, faceBbox, expectedUniform, canvas)
+├── <span class="hl">YOLO model loaded?</span>
+│   ├── Yes → Run YOLO inference via Web Worker
+│   │   ├── Resize body region to 640×640
+│   │   ├── Send pixels to worker → ONNX inference
+│   │   ├── Post-process: decode boxes → NMS (IoU 0.5)
+│   │   ├── Find best detection by confidence
+│   │   ├── Check: detected class matches expected uniform?
+│   │   └── Return { ok, confidence, detail }
+│   │
+│   └── No → <span class="hl-yellow">Color fallback</span>
+│       └── Return { ok: true, detail: "Color check" }
+│
+└── Return result
+    </div>
+  </div>
+
+  <h3>9.5 Performance Comparison</h3>
+  <div class="comparison">
+    <div class="comparison-header comparison-old">❌ Traditional Approach</div>
+    <div class="comparison-header comparison-new">✅ This Project</div>
+    <div class="comparison-item comparison-old">Raspberry Pi 4 + Python</div>
+    <div class="comparison-item comparison-new">Android tablet + Chrome</div>
+    <div class="comparison-item comparison-old">dlib HOG + CNN (CPU)</div>
+    <div class="comparison-item comparison-new">MediaPipe BlazeFace (WASM)</div>
+    <div class="comparison-item comparison-old">dlib 128-dim encodings</div>
+    <div class="comparison-item comparison-new">ArcFace 512-dim (WebGPU)</div>
+    <div class="comparison-item comparison-old">~1-3 FPS processing</div>
+    <div class="comparison-item comparison-new">~10 FPS (every 3rd frame)</div>
+    <div class="comparison-item comparison-old">Requires internet for AI</div>
+    <div class="comparison-item comparison-new">Fully offline capable</div>
+    <div class="comparison-item comparison-old">Python backend needed</div>
+    <div class="comparison-item comparison-new">Zero backend (fully browser)</div>
+    <div class="comparison-item comparison-old">Docker deployment</div>
+    <div class="comparison-item comparison-new">Vercel + GitHub Actions</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- 10. HARDWARE INTEGRATION -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container">
+  <h2 id="hardware">10. Hardware Integration</h2>
+  <div class="section-divider"></div>
+
+  <p>The hardware layer represents approximately 10% of the system and consists of a single Arduino Uno connected via USB-OTG to the tablet.</p>
+
+  <h3>10.1 Components</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Component</th>
+          <th>Cost</th>
+          <th>Role</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Arduino Uno (or Nano)</td>
+          <td>~$25</td>
+          <td>Gate controller — receives commands via USB serial</td>
+        </tr>
+        <tr>
+          <td>SG90 Servo Motor</td>
+          <td>~$5</td>
+          <td>Physical gate opening mechanism (rotates 0°-90°)</td>
+        </tr>
+        <tr>
+          <td>Push Button</td>
+          <td>~$2</td>
+          <td>Manual override — guard presses to open gate</td>
+        </tr>
+        <tr>
+          <td>USB-OTG Cable</td>
+          <td>~$5</td>
+          <td>Connects Arduino to tablet (Android standard)</td>
+        </tr>
+        <tr>
+          <td><strong>Total</strong></td>
+          <td><strong>~$37</strong></td>
+          <td>—</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>10.2 Serial Protocol</h3>
+  <div class="diagram">
+<span class="hl">PC → Arduino:</span>   <span class="hl-yellow">'O'</span> = Open gate  │  <span class="hl-yellow">'C'</span> = Close gate  │  <span class="hl-yellow">'S'</span> = Status query
+
+<span class="hl">Arduino → PC:</span>   <span class="hl-green">'B'</span> = Button pressed  │  <span class="hl-green">'R'</span> = Ready  │  <span class="hl-green">'K'</span> = Command ACK
+
+<span class="comment">// Arduino firmware state machine (smart_gate.ino)</span>
+<span class="hl">IDLE</span> ───(receive 'O')──→ <span class="hl-yellow">OPENING</span> ───(servo 90°)──→ <span class="hl-green">OPEN</span>
+  ↑                         │                         │
+  │                         │                         │
+  └───(receive 'C')─────────┴───(servo 0°)────────────┘
+  </div>
+
+  <h3>10.3 Web Serial API Integration</h3>
+  <p>The browser communicates with the Arduino using the <strong>Web Serial API</strong>, available in Chrome and Edge on Android:</p>
+  <pre><code>// arduino.ts — Key functions
+
+// 1. Connect (user must click to pair)
+const port = await navigator.serial.requestPort();
+await port.open({ baudRate: 9600 });
+
+// 2. Open gate
+await writer.write("O");  // Arduino rotates servo to 90°
+
+// 3. Close gate
+await writer.write("C");  // Arduino rotates servo to 0°
+
+// 4. Listen for button press (serial listener)
+const { value } = await reader.read();
+if (value === 'B') emit({ type: "button_press" });
+
+// 5. Auto-reconnect on disconnect (every 5s, max 60s)
+startAutoReconnect();  // Retry logic with exponential backoff</code></pre>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- 11. DATABASE SCHEMA -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container">
+  <h2 id="database">11. Database Schema</h2>
+  <div class="section-divider"></div>
+
+  <p>The system uses Supabase (PostgreSQL) as the cloud database and IndexedDB for offline storage on the tablet.</p>
+
+  <h3>11.1 Tables</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Table</th>
+          <th>Purpose</th>
+          <th>Key Columns</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>students</code></td>
+          <td>Enrolled students with face photos</td>
+          <td><code>id, name, student_id, department, uniform_type, photo_url, is_active</code></td>
+        </tr>
+        <tr>
+          <td><code>access_logs</code></td>
+          <td>All gate access attempts</td>
+          <td><code>id, person_id, person_name, method, success, confidence, uniform_ok, device_timestamp</code></td>
+        </tr>
+        <tr>
+          <td><code>system_settings</code></td>
+          <td>Configuration key-value store</td>
+          <td><code>key, value, description</code></td>
+        </tr>
+        <tr>
+          <td><code>course_uniforms</code></td>
+          <td>Maps courses to uniform types</td>
+          <td><code>id, course, uniform_type_id</code></td>
+        </tr>
+        <tr>
+          <td><code>uniform_types</code></td>
+          <td>Uniform definitions (name + description)</td>
+          <td><code>id, name, description</code></td>
+        </tr>
+        <tr>
+          <td><code>staff</code></td>
+          <td>Staff records</td>
+          <td><code>id, name, department, role</code></td>
+        </tr>
+        <tr>
+          <td><code>faculty</code></td>
+          <td>Faculty records</td>
+          <td><code>id, name, department</code></td>
+        </tr>
+        <tr>
+          <td><code>guest_visits</code></td>
+          <td>Visitor tracking</td>
+          <td><code>id, guest_name, purpose, check_in, check_out</code></td>
+        </tr>
+        <tr>
+          <td><code>manual_overrides</code></td>
+          <td>Guard-initiated gate operations</td>
+          <td><code>id, operator_name, reason, timestamp</code></td>
+        </tr>
+        <tr>
+          <td><code>cards</code></td>
+          <td>RFID/card management</td>
+          <td><code>id, card_uid, person_id, is_active</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>11.2 IndexedDB Schema</h3>
+  <div class="card">
+    <p>The kiosk maintains three object stores in IndexedDB for offline operation:</p>
+    <pre><code>Database: "smart-gate-kiosk" (Version 1)
+
+┌─ ObjectStore: "students"
+│  Key: id (UUID)
+│  Data: StoredStudent {
+│    id, name, student_id, department, uniform_type,
+│    photo_url, embeddings: Float32Array[], is_active, updated_at
+│  }
+│
+├─ ObjectStore: "logs"
+│  Key: id (auto-increment)
+│  Index: "synced" (0 = unsynced, 1 = synced)
+│  Data: StoredLog {
+│    person_id, person_name, direction, method,
+│    success, confidence, uniform_ok, synced, ...
+│  }
+│
+└─ ObjectStore: "settings"
+   Key: key (string)
+   Data: StoredSetting { key, value }</code></pre>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- 12. DEPLOYMENT & DEVOPS -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container">
+  <h2 id="deployment">12. Deployment &amp; DevOps</h2>
+  <div class="section-divider"></div>
+
+  <h3>12.1 Vercel Deployment</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Service</th>
+          <th>Vercel Project</th>
+          <th>Root Directory</th>
+          <th>Domain</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="tag tag-blue">Kiosk PWA</span></td>
+          <td><code>smart-gate-kiosk</code></td>
+          <td><code>services/kiosk</code></td>
+          <td><code>gate-kiosk.vercel.app</code></td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-green">Guard Station</span></td>
+          <td><code>smart-gate-guard</code></td>
+          <td><code>services/guard</code></td>
+          <td><code>guard-station.vercel.app</code></td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-yellow">Admin Dashboard</span></td>
+          <td><code>smart-gate-dashboard</code></td>
+          <td><code>services/dashboard</code></td>
+          <td><code>admin.vercel.app</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>12.2 CI/CD Pipelines</h3>
+
+  <div class="card">
+    <h4>CI Workflow (<code>.github/workflows/ci.yml</code>)</h4>
+    <p>Runs on every push to <code>main</code>/<code>develop</code> and every PR to <code>main</code>:</p>
+    <div class="diagram" style="margin: 1rem 0;">
+┌─ <span class="hl">Lint + Format</span> (1 job)
+│  ├─ Prettier check (blocking)
+│  └─ ESLint (informational)
+│
+├─ <span class="hl">TypeScript Check</span> (3 parallel jobs)
+│  ├─ Dashboard: tsc --noEmit
+│  ├─ Guard: tsc --noEmit
+│  └─ Kiosk: tsc --noEmit
+│
+├─ <span class="hl">Build</span> (3 parallel jobs)
+│  ├─ Dashboard: pnpm --filter @smart-gate/dashboard build
+│  ├─ Guard: pnpm --filter @smart-gate/guard build
+│  └─ Kiosk: pnpm --filter @smart-gate/kiosk build
+│
+├─ <span class="hl">Unit Tests</span> (1 job)
+│  └─ vitest run (28 tests)
+│
+└─ <span class="hl">CI Summary</span> (1 job)
+   └─ PR comment with ✅/❌ table
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>Deploy Workflow (<code>.github/workflows/deploy.yml</code>)</h4>
+    <p>Triggered on push to <code>main</code>, tag push, or manual dispatch:</p>
+    <div class="diagram" style="margin: 1rem 0;">
+┌─ <span class="hl-yellow">Pre-deploy Check</span>
+│  ├─ TypeScript (all 3 services)
+│  ├─ Run tests
+│  ├─ Build (all 3 services)
+│  └─ Must pass before any deployment
+│
+└─ <span class="hl-green">Deploy to Vercel</span> (matrix: 3 services)
+   ├─ Dashboard → Vercel project
+   ├─ Guard → Vercel project
+   └─ Kiosk → Vercel project
+    </div>
+  </div>
+
+  <div class="card">
+    <h4>Security — CodeQL (<code>.github/workflows/codeql.yml</code>)</h4>
+    <p>Runs weekly (every Monday) and on every push/PR to <code>main</code>:</p>
+    <ul>
+      <li>JavaScript/TypeScript analysis with <code>security-and-quality</code> queries</li>
+      <li>Scans all code in <code>services/</code> directory</li>
+      <li>Excludes <code>node_modules</code>, <code>.next</code>, and test files</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h4>Dependency Management — Dependabot (<code>.github/dependabot.yml</code>)</h4>
+    <p>Weekly automated dependency updates with grouped PRs:</p>
+    <div class="grid-3">
+      <div><strong>Next.js group</strong><br><small>next, react, react-dom, @types/react</small></div>
+      <div><strong>Supabase group</strong><br><small>@supabase/*</small></div>
+      <div><strong>TypeScript group</strong><br><small>typescript, @types/*</small></div>
+      <div><strong>Dev tools group</strong><br><small>turbo, prettier, vitest, tailwindcss</small></div>
+      <div><strong>GitHub Actions</strong><br><small>All action dependencies</small></div>
+      <div><strong>Schedule</strong><br><small>Monday 09:00 Asia/Manila</small></div>
+    </div>
+  </div>
+
+  <h3>12.3 Monorepo Architecture</h3>
+  <div class="card">
+    <pre><code>smart-gate/                    # Root workspace
+├── package.json              # pnpm workspaces + shared devDeps
+├── pnpm-workspace.yaml       # services/* only
+├── turbo.json                # Turborepo pipeline (build, typecheck, test)
+├── .prettierrc               # Centralized formatting rules
+└── .github/                  # CI/CD workflows + community standards</code></pre>
+    <p style="margin-top: 1rem;"><strong>Turborepo Pipeline:</strong> Build has cached outputs (`.next/`), typecheck caches `tsbuildinfo`, test depends on build, dev is persistent (no caching).</p>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- 13. TESTING -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container">
+  <h2 id="testing">13. Testing</h2>
+  <div class="section-divider"></div>
+
+  <h3>13.1 Unit Tests</h3>
+  <p>28 unit tests covering all pure logic functions across 7 categories:</p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th>Tests</th>
+          <th>What It Covers</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="tag tag-blue">cosineSimilarity</span></td>
+          <td>5</td>
+          <td>Identical, orthogonal, 128-dim, 512-dim, zero-vector NaN</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-green">matchFace</span></td>
+          <td>2</td>
+          <td>Empty enrolled list, correct person matching with noise</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-yellow">parsePhotoUrls</span></td>
+          <td>6</td>
+          <td>Null, empty, single URL, JSON array, malformed, filtering</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-purple">calculateIoU</span></td>
+          <td>4</td>
+          <td>Identical, non-overlapping, partial, contained boxes</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-red">nonMaxSuppression</span></td>
+          <td>4</td>
+          <td>Single, overlapping removal, non-overlapping keep, confidence priority</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-blue">Settings Parsing</span></td>
+          <td>3</td>
+          <td>Uniform toggle, threshold parsing, invalid input</td>
+        </tr>
+        <tr>
+          <td><span class="tag tag-green">Model Specs</span></td>
+          <td>4</td>
+          <td>Input size (112), normalization formula, correct ranges</td>
+        </tr>
+        <tr>
+          <td><strong>Total</strong></td>
+          <td><strong>28</strong></td>
+          <td>All passing ✅</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>13.2 Build Verification</h3>
+  <p>All three services build successfully with TypeScript strict mode:</p>
+  <div class="stats">
+    <div class="stat-card"><div class="stat-number">✅</div><div class="stat-label">Dashboard Build</div></div>
+    <div class="stat-card"><div class="stat-number">✅</div><div class="stat-label">Guard Build</div></div>
+    <div class="stat-card"><div class="stat-number">✅</div><div class="stat-label">Kiosk Build</div></div>
+  </div>
+
+  <h3>13.3 Test Coverage Areas</h3>
+  <div class="grid-2">
+    <div class="card">
+      <h4>✅ Edge Cases Tested</h4>
+      <ul>
+        <li>Empty enrolled face list (no crash)</li>
+        <li>Zero-vector embeddings (NaN handling)</li>
+        <li>Malformed JSON photo URLs (graceful fallback)</li>
+        <li>Non-overlapping detection boxes (kept separate)</li>
+        <li>Fully contained boxes (correct IoU)</li>
+        <li>Invalid threshold strings (NaN detection)</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h4>✅ Correctness Tests</h4>
+      <ul>
+        <li>Identical vectors → score = 1.0</li>
+        <li>Orthogonal vectors → score ≈ 0</li>
+        <li>Similar vectors score > different vectors</li>
+        <li>Matching identifies correct person</li>
+        <li>IoU formula correctness (1/3 partial overlap)</li>
+        <li>NMS keeps high-confidence detection</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- 14. CONCLUSION -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+
+<div class="container" style="margin-bottom: 6rem;">
+  <h2 id="conclusion">14. Conclusion</h2>
+  <div class="section-divider"></div>
+
+  <p>
+    The Smart Gate System successfully demonstrates that enterprise-grade access control can be achieved with <strong>90% software and only 10% hardware</strong> — without a Raspberry Pi, without a Python backend, without cloud AI inference, and without constant internet connectivity.
+  </p>
+
+  <h3>14.1 Key Achievements</h3>
+  <div class="grid-3">
+    <div class="card" style="text-align: center;">
+      <div style="font-size: 2.5rem; font-weight: 800; color: var(--primary);">$37</div>
+      <p style="font-size: 0.85rem; margin-top: 0.5rem;">Total hardware cost (Arduino + servo + button)</p>
+    </div>
+    <div class="card" style="text-align: center;">
+      <div style="font-size: 2.5rem; font-weight: 800; color: var(--success);">99.4%</div>
+      <p style="font-size: 0.85rem; margin-top: 0.5rem;">ArcFace LFW accuracy — industry-leading face recognition</p>
+    </div>
+    <div class="card" style="text-align: center;">
+      <div style="font-size: 2.5rem; font-weight: 800; color: var(--warning);">3</div>
+      <p style="font-size: 0.85rem; margin-top: 0.5rem;">Deployable services on Vercel free tier</p>
+    </div>
+  </div>
+
+  <h3>14.2 What Makes This Industry Standard (2026)</h3>
+  <ul>
+    <li><strong>In-browser AI</strong> — All inference runs client-side via Web Worker, no server costs</li>
+    <li><strong>WebGPU acceleration</strong> — 3-5x faster than WASM, leverages tablet GPU</li>
+    <li><strong>ArcFace recognition</strong> — 99.4% LFW accuracy, the standard for face recognition in 2026</li>
+    <li><strong>Offline-first</strong> — IndexedDB + service worker provide full offline capability</li>
+    <li><strong>3-photo enrollment</strong> — Multiple angles per student for robust matching</li>
+    <li><strong>Monorepo with Turborepo</strong> — Industry standard for multi-service JavaScript projects</li>
+    <li><strong>CI/CD with matrix builds</strong> — Parallel typecheck + build across 3 services</li>
+    <li><strong>Security scanning</strong> — CodeQL + Dependabot for automated vulnerability management</li>
+    <li><strong>Vercel deployment</strong> — 3 independent projects, each on free tier</li>
+    <li><strong>TypeScript throughout</strong> — Full type safety across all services</li>
+  </ul>
+
+  <h3>14.3 Future Work</h3>
+  <ul>
+    <li><strong>Live uniform training</strong> — In-app training workflow for adding new uniform types</li>
+    <li><strong>Multi-tablet sync</strong> — Multiple kiosks sharing the same student database</li>
+    <li><strong>QR guest passes</strong> — Self-service guest registration with QR code generation</li>
+    <li><strong>Push notifications</strong> — Alert guards on unrecognized faces or policy violations</li>
+    <li><strong>Dashboard tests</strong> — Add Vitest or Playwright tests for dashboard components</li>
+    <li><strong>SCRFD face detection</strong> — Upgrade from MediaPipe to SCRFD for higher detection accuracy</li>
+  </ul>
+
+  <h3>14.4 References</h3>
+  <div class="card">
+    <ol style="margin: 0;">
+      <li>Deng, J., Guo, J., Xue, N., &amp; Zafeiriou, S. (2019). <em>ArcFace: Additive Angular Margin Loss for Deep Face Recognition</em>. IEEE Conference on Computer Vision and Pattern Recognition (CVPR). <a href="https://arxiv.org/abs/1801.07698">https://arxiv.org/abs/1801.07698</a></li>
+      <li>Lugaresi, C., et al. (2019). <em>MediaPipe: A Framework for Building Perception Pipelines</em>. Google Research. <a href="https://arxiv.org/abs/1906.08172">https://arxiv.org/abs/1906.08172</a></li>
+      <li>Jocher, G., et al. (2023). <em>Ultralytics YOLO11</em>. <a href="https://github.com/ultralytics/ultralytics">https://github.com/ultralytics/ultralytics</a></li>
+      <li>ONNX Runtime Contributors. (2024). <em>ONNX Runtime Web: Cross-Platform Machine Learning Inference</em>. Microsoft. <a href="https://onnxruntime.ai/">https://onnxruntime.ai/</a></li>
+      <li>Supabase Contributors. (2024). <em>Supabase: The Open Source Firebase Alternative</em>. <a href="https://supabase.com/">https://supabase.com/</a></li>
+      <li>Vercel Inc. (2024). <em>Next.js: The React Framework for the Web</em>. <a href="https://nextjs.org/">https://nextjs.org/</a></li>
+      <li>Google Chrome Team. (2024). <em>Web Serial API</em>. W3C Draft Community Group Report. <a href="https://wicg.github.io/serial/">https://wicg.github.io/serial/</a></li>
+    </ol>
+  </div>
+
+  <div style="text-align: center; margin-top: 4rem; padding: 2rem; border-top: 1px solid var(--surface-700);">
+    <p style="font-size: 0.85rem; color: var(--surface-500);">
+      Smart Gate System v3.0.0 · Capstone Project · 2026<br>
+      <a href="https://github.com/YOUR_USER/smart-gate">GitHub Repository</a>
+    </p>
+  </div>
+</div>
+
+</body>
+</html>

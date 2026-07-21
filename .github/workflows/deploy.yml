@@ -1,0 +1,149 @@
+# ─── Deploy: Production + Preview ───────────────────────────
+# Vercel handles preview deployments natively via Git integration.
+# This workflow handles production rollouts & manual deploys.
+#
+# Prerequisites:
+#   1. Create 3 Vercel projects, each pointing to:
+#      Root Directory → services/dashboard (or guard/kiosk)
+#      Framework → Preview → Next.js, Build → next build
+#   2. Add secrets to GitHub: VERCEL_TOKEN, VERCEL_ORG_ID,
+#      VERCEL_DASHBOARD_PROJECT_ID, VERCEL_GUARD_PROJECT_ID,
+#      VERCEL_KIOSK_PROJECT_ID, NEXT_PUBLIC_SUPABASE_URL,
+#      NEXT_PUBLIC_SUPABASE_ANON_KEY
+#   3. Vercel auto-deploys previews per branch (Git integration)
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      service:
+        description: "Service to deploy"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - dashboard
+          - guard
+          - kiosk
+      environment:
+        description: "Target environment"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - production
+          - preview
+
+env:
+  NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+
+jobs:
+  # ─── Gate: Verify code before deploying ───────────────────
+  check:
+    name: 🔍 Pre-deploy Verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript check (Dashboard)
+        working-directory: services/dashboard
+        run: npx tsc --noEmit --pretty
+
+      - name: TypeScript check (Guard)
+        working-directory: services/guard
+        run: npx tsc --noEmit --pretty
+
+      - name: TypeScript check (Kiosk)
+        working-directory: services/kiosk
+        run: npx tsc --noEmit --pretty
+
+      - name: Run tests
+        working-directory: services/kiosk
+        run: npx vitest run --reporter=verbose
+
+      - name: Build Dashboard
+        working-directory: services/dashboard
+        run: pnpm build
+
+      - name: Build Guard
+        working-directory: services/guard
+        run: pnpm build
+
+      - name: Build Kiosk
+        working-directory: services/kiosk
+        run: pnpm build
+
+  # ─── Deploy to Vercel ─────────────────────────────────────
+  deploy:
+    name: 🚀 Deploy ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: [check]
+    if: |
+      success() &&
+      (github.event_name != 'workflow_dispatch' ||
+       github.event.inputs.service == 'all' ||
+       github.event.inputs.service == matrix.service)
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - dashboard
+          - guard
+          - kiosk
+        include:
+          - service: dashboard
+            vercel-project-id: ${{ secrets.VERCEL_DASHBOARD_PROJECT_ID }}
+          - service: guard
+            vercel-project-id: ${{ secrets.VERCEL_GUARD_PROJECT_ID }}
+          - service: kiosk
+            vercel-project-id: ${{ secrets.VERCEL_KIOSK_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build ${{ matrix.service }}
+        working-directory: services/${{ matrix.service }}
+        run: pnpm build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+
+      - name: Deploy ${{ matrix.service }} to Vercel
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ matrix.vercel-project-id }}
+          vercel-args: ${{ github.event.inputs.environment == 'preview' && '' || '--prod' }}
+          working-directory: services/${{ matrix.service }}
