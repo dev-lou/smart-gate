@@ -25,8 +25,11 @@ export default function StudentsPage() {
 
   useEffect(() => {
     const supabase = getSupabase();
-    if (!supabase) { router.push("/login"); return; }
-    
+    if (!supabase) {
+      router.push("/login");
+      return;
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session) router.push("/login");
     });
@@ -64,10 +67,11 @@ export default function StudentsPage() {
   }
 
   const filtered = search
-    ? students.filter((s) =>
-        s.name.toLowerCase().includes(search.toLowerCase()) ||
-        s.student_id?.toLowerCase().includes(search.toLowerCase()) ||
-        s.department?.toLowerCase().includes(search.toLowerCase())
+    ? students.filter(
+        (s) =>
+          s.name.toLowerCase().includes(search.toLowerCase()) ||
+          s.student_id?.toLowerCase().includes(search.toLowerCase()) ||
+          s.department?.toLowerCase().includes(search.toLowerCase()),
       )
     : students;
 
@@ -78,7 +82,12 @@ export default function StudentsPage() {
           <h1 className="text-2xl font-bold text-white">👥 Students</h1>
           <p className="text-surface-400 text-sm mt-1">{students.length} enrolled students</p>
         </div>
-        <a href="http://localhost:3001" target="_blank" rel="noopener noreferrer" className="btn-primary text-sm">
+        <a
+          href="http://localhost:3001"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="btn-primary text-sm"
+        >
           + New Enrollment
         </a>
       </div>
@@ -118,9 +127,14 @@ export default function StudentsPage() {
               </thead>
               <tbody>
                 {filtered.map((s) => (
-                  <tr key={s.id} className="border-b border-surface-800/50 hover:bg-surface-800/30 transition-colors">
+                  <tr
+                    key={s.id}
+                    className="border-b border-surface-800/50 hover:bg-surface-800/30 transition-colors"
+                  >
                     <td className="table-cell font-medium text-white">{s.name}</td>
-                    <td className="table-cell text-surface-400 font-mono text-xs">{s.student_id || "—"}</td>
+                    <td className="table-cell text-surface-400 font-mono text-xs">
+                      {s.student_id || "—"}
+                    </td>
                     <td className="table-cell">{s.department || "—"}</td>
                     <td className="table-cell">
                       <span className="px-2 py-1 bg-primary-600/10 text-primary-400 rounded-md text-xs font-medium">
@@ -128,9 +142,13 @@ export default function StudentsPage() {
                       </span>
                     </td>
                     <td className="table-cell">
-                      <span className={`px-2 py-1 rounded-md text-xs font-medium ${
-                        s.is_active ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"
-                      }`}>
+                      <span
+                        className={`px-2 py-1 rounded-md text-xs font-medium ${
+                          s.is_active
+                            ? "bg-green-500/10 text-green-400"
+                            : "bg-red-500/10 text-red-400"
+                        }`}
+                      >
                         {s.is_active ? "Active" : "Inactive"}
                       </span>
                     </td>

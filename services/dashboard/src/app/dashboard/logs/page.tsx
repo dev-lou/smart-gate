@@ -26,8 +26,11 @@ export default function LogsPage() {
 
   useEffect(() => {
     const supabase = getSupabase();
-    if (!supabase) { router.push("/login"); return; }
-    
+    if (!supabase) {
+      router.push("/login");
+      return;
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session) router.push("/login");
     });
@@ -45,11 +48,20 @@ export default function LogsPage() {
     const now = new Date();
     let since: Date;
     switch (dateRange) {
-      case "1h": since = new Date(now.getTime() - 60 * 60 * 1000); break;
-      case "24h": since = new Date(now.getTime() - 24 * 60 * 60 * 1000); break;
-      case "7d": since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); break;
-      case "30d": since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000); break;
-      default: since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      case "1h":
+        since = new Date(now.getTime() - 60 * 60 * 1000);
+        break;
+      case "24h":
+        since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+        break;
+      case "7d":
+        since = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      case "30d":
+        since = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        break;
+      default:
+        since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     }
 
     let query = supabase
@@ -144,7 +156,10 @@ export default function LogsPage() {
               </thead>
               <tbody>
                 {logs.map((log) => (
-                  <tr key={log.id} className="border-b border-surface-800/50 hover:bg-surface-800/30 transition-colors">
+                  <tr
+                    key={log.id}
+                    className="border-b border-surface-800/50 hover:bg-surface-800/30 transition-colors"
+                  >
                     <td className="table-cell text-surface-400 text-xs whitespace-nowrap">
                       {formatTimestamp(log.created_at)}
                     </td>
@@ -160,9 +175,13 @@ export default function LogsPage() {
                       </span>
                     </td>
                     <td className="table-cell">
-                      <span className={`px-2 py-1 rounded-md text-xs font-medium ${
-                        log.success ? "bg-green-500/10 text-green-400" : "bg-red-500/10 text-red-400"
-                      }`}>
+                      <span
+                        className={`px-2 py-1 rounded-md text-xs font-medium ${
+                          log.success
+                            ? "bg-green-500/10 text-green-400"
+                            : "bg-red-500/10 text-red-400"
+                        }`}
+                      >
                         {log.success ? "GRANTED" : "DENIED"}
                       </span>
                     </td>

@@ -49,9 +49,9 @@ let syncTimer: ReturnType<typeof setTimeout> | null = null;
 // ─── Constants ──────────────────────────────────────────────
 
 const SYNC_TIMEOUT_MS = 30_000; // 🛡️ Max sync duration (prevents deadlock)
-const BATCH_SIZE = 50;          // Logs per batch
-const MAX_RETRIES = 3;          // Retry attempts per batch
-const RETRY_BASE_DELAY = 1000;  // 1s, then 2s, then 4s
+const BATCH_SIZE = 50; // Logs per batch
+const MAX_RETRIES = 3; // Retry attempts per batch
+const RETRY_BASE_DELAY = 1000; // 1s, then 2s, then 4s
 
 // ─── Sync Lock (Crash-Safe) ─────────────────────────────────
 
@@ -163,9 +163,7 @@ export async function downloadStudents(): Promise<number> {
 export async function downloadSettings(): Promise<void> {
   if (!supabase) throw new Error("Supabase not initialized");
 
-  const { data, error } = await supabase
-    .from("system_settings")
-    .select("key, value");
+  const { data, error } = await supabase.from("system_settings").select("key, value");
 
   if (error) throw error;
   if (!data) return;
@@ -220,7 +218,7 @@ export async function uploadLogs(): Promise<number> {
             // sync_id is stored locally in IndexedDB for client-side dedup
             // Future: add sync_id column to access_logs for server-side dedup
             // (see database/migrations/003_add_sync_id.sql)
-          }))
+          })),
         );
 
         if (error) {
@@ -235,7 +233,7 @@ export async function uploadLogs(): Promise<number> {
             const delay = RETRY_BASE_DELAY * Math.pow(2, attempt);
             console.warn(
               `[Supabase] Batch upload failed (attempt ${attempt + 1}/${MAX_RETRIES}), retrying in ${delay}ms:`,
-              error.message
+              error.message,
             );
             await sleep(delay);
           }
@@ -257,7 +255,7 @@ export async function uploadLogs(): Promise<number> {
       // 🛡️ Log the error but don't crash — these logs will be retried on next sync
       console.warn(
         `[Supabase] Batch upload failed after ${MAX_RETRIES} attempts. ${batch.length} logs will retry on next sync.`,
-        lastError?.message
+        lastError?.message,
       );
       // Stop processing further batches (likely a systemic issue)
       break;
@@ -304,7 +302,8 @@ export async function fullSync(): Promise<SyncStatus> {
         return {
           lastSync: null,
           syncing: false,
-          error: "Supabase not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY",
+          error:
+            "Supabase not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY",
           studentsDownloaded: 0,
           logsUploaded: 0,
         };
@@ -324,10 +323,7 @@ export async function fullSync(): Promise<SyncStatus> {
     }
 
     // Download students and settings in parallel
-    const [studentCount] = await Promise.all([
-      downloadStudents(),
-      downloadSettings(),
-    ]);
+    const [studentCount] = await Promise.all([downloadStudents(), downloadSettings()]);
 
     // Upload logs
     const logCount = await uploadLogs();

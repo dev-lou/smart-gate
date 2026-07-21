@@ -84,7 +84,7 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
         // The `transfer` property works identically in Worker contexts
         self.postMessage(
           { type: "embedding_result", id, data: embedding },
-          { transfer: embedding ? [embedding.buffer] : [] }
+          { transfer: embedding ? [embedding.buffer] : [] },
         );
         break;
       }
@@ -145,9 +145,9 @@ async function computeEmbedding(data: EmbeddingData): Promise<Float32Array | nul
 
   for (let i = 0; i < inputSize; i++) {
     const offset = i * 4;
-    float32Data[i] = (pixels[offset] - 127.5) / 127.5;                        // R
-    float32Data[inputSize + i] = (pixels[offset + 1] - 127.5) / 127.5;        // G
-    float32Data[2 * inputSize + i] = (pixels[offset + 2] - 127.5) / 127.5;    // B
+    float32Data[i] = (pixels[offset] - 127.5) / 127.5; // R
+    float32Data[inputSize + i] = (pixels[offset + 1] - 127.5) / 127.5; // G
+    float32Data[2 * inputSize + i] = (pixels[offset + 2] - 127.5) / 127.5; // B
   }
 
   const inputTensor = new ort.Tensor("float32", float32Data, [1, 3, height, width]);
@@ -196,9 +196,9 @@ async function runYoloInference(data: YoloData): Promise<YoloDetection[]> {
 
   for (let i = 0; i < inputSize; i++) {
     const offset = i * 4;
-    float32Data[i] = pixels[offset] / 255.0;                                 // R
-    float32Data[inputSize + i] = pixels[offset + 1] / 255.0;                 // G
-    float32Data[2 * inputSize + i] = pixels[offset + 2] / 255.0;             // B
+    float32Data[i] = pixels[offset] / 255.0; // R
+    float32Data[inputSize + i] = pixels[offset + 1] / 255.0; // G
+    float32Data[2 * inputSize + i] = pixels[offset + 2] / 255.0; // B
   }
 
   const inputTensor = new ort.Tensor("float32", float32Data, [1, 3, height, width]);
@@ -221,7 +221,7 @@ async function runYoloInference(data: YoloData): Promise<YoloDetection[]> {
 function postprocess(
   output: Float32Array,
   dims: readonly number[],
-  numClasses: number
+  numClasses: number,
 ): YoloDetection[] {
   if (dims.length < 3) return [];
 
@@ -267,10 +267,7 @@ function postprocess(
 /**
  * Non-Maximum Suppression to remove overlapping boxes.
  */
-function nonMaxSuppression(
-  detections: YoloDetection[],
-  iouThreshold: number
-): YoloDetection[] {
+function nonMaxSuppression(detections: YoloDetection[], iouThreshold: number): YoloDetection[] {
   if (detections.length <= 1) return detections;
 
   const sorted = [...detections].sort((a, b) => b.confidence - a.confidence);
@@ -296,13 +293,19 @@ function nonMaxSuppression(
  */
 function calculateIoU(
   a: [number, number, number, number],
-  b: [number, number, number, number]
+  b: [number, number, number, number],
 ): number {
   const [ax, ay, aw, ah] = a;
   const [bx, by, bw, bh] = b;
 
-  const ax1 = ax, ay1 = ay, ax2 = ax + aw, ay2 = ay + ah;
-  const bx1 = bx, by1 = by, bx2 = bx + bw, by2 = by + bh;
+  const ax1 = ax,
+    ay1 = ay,
+    ax2 = ax + aw,
+    ay2 = ay + ah;
+  const bx1 = bx,
+    by1 = by,
+    bx2 = bx + bw,
+    by2 = by + bh;
 
   const x1 = Math.max(ax1, bx1);
   const y1 = Math.max(ay1, by1);

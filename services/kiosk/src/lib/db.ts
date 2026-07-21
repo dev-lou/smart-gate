@@ -316,9 +316,5 @@ export async function getDatabaseStats(): Promise<{
 
 export async function clearAllData(): Promise<void> {
   const db = await getDb();
-  await Promise.all([
-    db.clear("students"),
-    db.clear("logs"),
-    db.clear("settings"),
-  ]);
+  await Promise.all([db.clear("students"), db.clear("logs"), db.clear("settings")]);
 }

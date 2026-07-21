@@ -57,8 +57,7 @@ const FACE_DETECTOR_MODEL = `${MODEL_BASE_URL}/face_detector/blaze_face_short_ra
 //   Output: 512-dim embedding  — caller applies L2 normalization
 //   Size:   ~6MB
 //   Source (updated 2026): https://huggingface.co/WePrompt/buffalo_sc
-const ONNX_MODEL_URL =
-  "https://huggingface.co/WePrompt/buffalo_sc/resolve/main/w600k_mbf.onnx";
+const ONNX_MODEL_URL = "https://huggingface.co/WePrompt/buffalo_sc/resolve/main/w600k_mbf.onnx";
 
 let faceDetector: FaceDetector | null = null;
 let modelLoading = false;
@@ -78,13 +77,10 @@ export async function initFaceDetector(): Promise<boolean> {
 
   try {
     const vision = await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm"
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm",
     );
 
-    faceDetector = await FaceDetector.createFromModelPath(
-      vision,
-      FACE_DETECTOR_MODEL
-    );
+    faceDetector = await FaceDetector.createFromModelPath(vision, FACE_DETECTOR_MODEL);
     modelLoading = false;
     return true;
   } catch (err) {
@@ -111,10 +107,7 @@ export async function initFaceRecognizer(): Promise<boolean> {
 /**
  * Detect faces in a video frame using MediaPipe.
  */
-export function detectFaces(
-  video: HTMLVideoElement,
-  canvas: HTMLCanvasElement
-): FaceResult[] {
+export function detectFaces(video: HTMLVideoElement, canvas: HTMLCanvasElement): FaceResult[] {
   if (!faceDetector) return [];
 
   const ctx = canvas.getContext("2d");
@@ -154,7 +147,7 @@ export function detectFaces(
 export async function getFaceEmbedding(
   video: HTMLVideoElement,
   bbox: [number, number, number, number],
-  canvas: HTMLCanvasElement
+  canvas: HTMLCanvasElement,
 ): Promise<Float32Array | null> {
   if (!faceWorkerReady) return null;
 
@@ -190,7 +183,7 @@ export async function getFaceEmbedding(
         height: FACE_INPUT_SIZE,
       },
       [imageData.data.buffer],
-      30000
+      30000,
     );
 
     return result as Float32Array;
@@ -208,10 +201,7 @@ export async function getFaceEmbedding(
  * 🔴 ACCURACY FIX #4: Student with multiple embeddings (front, left, right angles)
  * is compared from all angles — best score wins.
  */
-export function matchFace(
-  embedding: Float32Array,
-  enrolledFaces: EnrolledFace[]
-): MatchResult {
+export function matchFace(embedding: Float32Array, enrolledFaces: EnrolledFace[]): MatchResult {
   if (enrolledFaces.length === 0) {
     return { person: null, confidence: 0, matched: false };
   }
@@ -290,7 +280,7 @@ export function detectFacesFromCanvas(canvas: HTMLCanvasElement): FaceResult[] {
  */
 export async function getFaceEmbeddingFromCanvas(
   canvas: HTMLCanvasElement,
-  bbox: [number, number, number, number]
+  bbox: [number, number, number, number],
 ): Promise<Float32Array | null> {
   if (!faceWorkerReady) return null;
 
@@ -322,7 +312,7 @@ export async function getFaceEmbeddingFromCanvas(
         height: FACE_INPUT_SIZE,
       },
       [imageData.data.buffer],
-      30000
+      30000,
     );
 
     return result as Float32Array;

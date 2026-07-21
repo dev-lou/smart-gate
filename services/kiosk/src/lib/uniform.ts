@@ -77,7 +77,9 @@ export async function initUniformDetector(modelUrl?: string): Promise<boolean> {
   const url = modelUrl || YOLO_MODEL_URL;
 
   if (!url) {
-    console.warn("[Uniform] No YOLO model URL configured. Uniform detection disabled until you train a model.");
+    console.warn(
+      "[Uniform] No YOLO model URL configured. Uniform detection disabled until you train a model.",
+    );
     console.warn("[Uniform] See docs/UNIFORM_TRAINING.md for instructions.");
     modelLoading = false;
     return false;
@@ -138,7 +140,7 @@ export async function checkUniform(
   video: HTMLVideoElement,
   faceBbox: [number, number, number, number],
   expectedUniform: string,
-  canvas: HTMLCanvasElement
+  canvas: HTMLCanvasElement,
 ): Promise<UniformCheckResult> {
   // If YOLO model is loaded in Web Worker, use it
   if (yoloWorkerInitialized) {
@@ -147,9 +149,7 @@ export async function checkUniform(
 
       if (detections.length > 0) {
         // Best detection by confidence
-        const bestDet = detections.reduce((a, b) =>
-          a.confidence > b.confidence ? a : b
-        );
+        const bestDet = detections.reduce((a, b) => (a.confidence > b.confidence ? a : b));
 
         const detectedClass = classNames.find((c) => c.id === bestDet.classId);
         const detectedLabel = detectedClass?.label || `class_${bestDet.classId}`;
@@ -158,7 +158,7 @@ export async function checkUniform(
         const expectedClass = classNames.find(
           (c) =>
             c.label.toLowerCase() === expectedUniform.toLowerCase() ||
-            c.name.toLowerCase() === expectedUniform.toLowerCase()
+            c.name.toLowerCase() === expectedUniform.toLowerCase(),
         );
 
         if (expectedClass) {
@@ -210,7 +210,7 @@ export async function checkUniform(
  */
 async function runYoloInference(
   video: HTMLVideoElement,
-  canvas: HTMLCanvasElement
+  canvas: HTMLCanvasElement,
 ): Promise<YoloDetection[]> {
   if (!yoloWorkerInitialized) return [];
 
@@ -237,7 +237,7 @@ async function runYoloInference(
       numClasses: classNames.length || 4,
     },
     [imageData.data.buffer], // Transfer for zero-copy
-    60000
+    60000,
   );
 
   return (result as YoloDetection[]) || [];
@@ -252,7 +252,7 @@ async function colorFallbackCheck(
   video: HTMLVideoElement,
   faceBbox: [number, number, number, number],
   expectedUniform: string,
-  canvas: HTMLCanvasElement
+  canvas: HTMLCanvasElement,
 ): Promise<UniformCheckResult> {
   // Simple color matching — just a fallback
   return {
@@ -284,7 +284,7 @@ export function getUniformClasses(): UniformClass[] {
 export function estimateBodyRegion(
   faceBbox: [number, number, number, number],
   videoWidth: number,
-  videoHeight: number
+  videoHeight: number,
 ): DOMRect | null {
   const [fx, fy, fw, fh] = faceBbox;
 
@@ -301,7 +301,7 @@ export function estimateBodyRegion(
     Math.max(0, bodyLeft),
     Math.min(videoHeight, bodyTop),
     Math.min(videoWidth - bodyLeft, bodyWidth),
-    Math.min(videoHeight - bodyTop, bodyHeight)
+    Math.min(videoHeight - bodyTop, bodyHeight),
   );
 }
 

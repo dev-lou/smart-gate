@@ -113,10 +113,7 @@ interface MatchResult {
 
 const MATCH_THRESHOLD = 0.6;
 
-function matchFace(
-  embedding: Float32Array,
-  enrolledFaces: EnrolledFace[]
-): MatchResult {
+function matchFace(embedding: Float32Array, enrolledFaces: EnrolledFace[]): MatchResult {
   if (enrolledFaces.length === 0) {
     return { person: null, confidence: 0, matched: false };
   }
@@ -259,13 +256,19 @@ interface YoloDetection {
 
 function calculateIoU(
   a: [number, number, number, number],
-  b: [number, number, number, number]
+  b: [number, number, number, number],
 ): number {
   const [ax, ay, aw, ah] = a;
   const [bx, by, bw, bh] = b;
 
-  const ax1 = ax, ay1 = ay, ax2 = ax + aw, ay2 = ay + ah;
-  const bx1 = bx, by1 = by, bx2 = bx + bw, by2 = by + bh;
+  const ax1 = ax,
+    ay1 = ay,
+    ax2 = ax + aw,
+    ay2 = ay + ah;
+  const bx1 = bx,
+    by1 = by,
+    bx2 = bx + bw,
+    by2 = by + bh;
 
   const x1 = Math.max(ax1, bx1);
   const y1 = Math.max(ay1, by1);
@@ -280,10 +283,7 @@ function calculateIoU(
   return union > 0 ? intersection / union : 0;
 }
 
-function nonMaxSuppression(
-  detections: YoloDetection[],
-  iouThreshold: number
-): YoloDetection[] {
+function nonMaxSuppression(detections: YoloDetection[], iouThreshold: number): YoloDetection[] {
   if (detections.length <= 1) return detections;
 
   const sorted = [...detections].sort((a, b) => b.confidence - a.confidence);
@@ -334,9 +334,7 @@ describe("calculateIoU", () => {
 
 describe("nonMaxSuppression", () => {
   it("returns single detection as-is", () => {
-    const dets: YoloDetection[] = [
-      { bbox: [0.1, 0.1, 0.5, 0.5], classId: 0, confidence: 0.9 },
-    ];
+    const dets: YoloDetection[] = [{ bbox: [0.1, 0.1, 0.5, 0.5], classId: 0, confidence: 0.9 }];
     expect(nonMaxSuppression(dets, 0.5)).toHaveLength(1);
   });
 

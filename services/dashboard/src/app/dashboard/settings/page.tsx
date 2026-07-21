@@ -13,7 +13,11 @@ interface Setting {
 const SETTING_META: Record<string, { label: string; type: string; options?: string[] }> = {
   school_name: { label: "School Name", type: "text" },
   face_recognition_threshold: { label: "Face Match Threshold", type: "number" },
-  uniform_detection_enabled: { label: "Enable Uniform Detection", type: "select", options: ["true", "false"] },
+  uniform_detection_enabled: {
+    label: "Enable Uniform Detection",
+    type: "select",
+    options: ["true", "false"],
+  },
   gate_open_duration: { label: "Gate Open Duration (seconds)", type: "number" },
   sync_interval_minutes: { label: "Sync Interval (minutes)", type: "number" },
 };
@@ -27,8 +31,11 @@ export default function SettingsPage() {
 
   useEffect(() => {
     const supabase = getSupabase();
-    if (!supabase) { router.push("/login"); return; }
-    
+    if (!supabase) {
+      router.push("/login");
+      return;
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (!session) router.push("/login");
     });
@@ -48,15 +55,13 @@ export default function SettingsPage() {
   }
 
   async function updateSetting(key: string, value: string) {
-    setSettings((prev) =>
-      prev.map((s) => (s.key === key ? { ...s, value } : s))
-    );
+    setSettings((prev) => prev.map((s) => (s.key === key ? { ...s, value } : s)));
   }
 
   async function saveSettings() {
     const supabase = getSupabase();
     if (!supabase) return;
-    
+
     setSaving(true);
     setMessage("");
 
@@ -96,9 +101,13 @@ export default function SettingsPage() {
       </div>
 
       {message && (
-        <div className={`mb-6 px-4 py-3 rounded-xl text-sm ${
-          message.startsWith("Error") ? "bg-red-500/10 text-red-400" : "bg-green-500/10 text-green-400"
-        }`}>
+        <div
+          className={`mb-6 px-4 py-3 rounded-xl text-sm ${
+            message.startsWith("Error")
+              ? "bg-red-500/10 text-red-400"
+              : "bg-green-500/10 text-green-400"
+          }`}
+        >
           {message}
         </div>
       )}
@@ -113,12 +122,8 @@ export default function SettingsPage() {
               const meta = SETTING_META[setting.key];
               return (
                 <div key={setting.key} className="glass-card p-6">
-                  <label className="block font-semibold text-white mb-1">
-                    {meta.label}
-                  </label>
-                  <p className="text-xs text-surface-400 mb-3">
-                    {setting.description || ""}
-                  </p>
+                  <label className="block font-semibold text-white mb-1">{meta.label}</label>
+                  <p className="text-xs text-surface-400 mb-3">{setting.description || ""}</p>
 
                   {meta.type === "select" ? (
                     <select
@@ -156,12 +161,13 @@ export default function SettingsPage() {
             {settings
               .filter((s) => !SETTING_META[s.key])
               .map((s) => (
-                <div key={s.key} className="flex items-center justify-between py-3 border-b border-surface-800/50 last:border-0">
+                <div
+                  key={s.key}
+                  className="flex items-center justify-between py-3 border-b border-surface-800/50 last:border-0"
+                >
                   <div>
                     <p className="text-white text-sm font-medium">{s.key}</p>
-                    {s.description && (
-                      <p className="text-surface-400 text-xs">{s.description}</p>
-                    )}
+                    {s.description && <p className="text-surface-400 text-xs">{s.description}</p>}
                   </div>
                   <input
                     type="text"

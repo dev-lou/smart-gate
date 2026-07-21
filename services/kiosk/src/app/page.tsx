@@ -45,14 +45,7 @@ import { fullSync, initSupabase } from "@/lib/supabase";
 // ─── Types ──────────────────────────────────────────────────
 
 type KioskState =
-  | "init"
-  | "loading_models"
-  | "ready"
-  | "scanning"
-  | "granted"
-  | "denied"
-  | "error"
-  | "offline";
+  "init" | "loading_models" | "ready" | "scanning" | "granted" | "denied" | "error" | "offline";
 
 // ─── Main Component ─────────────────────────────────────────
 
@@ -81,9 +74,15 @@ export default function KioskPage() {
   const onlineRef = useRef(true);
 
   // Keep refs in sync with React state
-  useEffect(() => { kioskStateRef.current = kioskState; }, [kioskState]);
-  useEffect(() => { arduinoConnectedRef.current = arduinoConnected; }, [arduinoConnected]);
-  useEffect(() => { onlineRef.current = online; }, [online]);
+  useEffect(() => {
+    kioskStateRef.current = kioskState;
+  }, [kioskState]);
+  useEffect(() => {
+    arduinoConnectedRef.current = arduinoConnected;
+  }, [arduinoConnected]);
+  useEffect(() => {
+    onlineRef.current = online;
+  }, [online]);
 
   // Tracking refs for performance
   const enrolledRef = useRef<EnrolledFace[]>([]);
@@ -266,7 +265,7 @@ export default function KioskPage() {
 
             // 2. For the largest face, try recognition
             const largestFace = faces.reduce((a, b) =>
-              a.bbox[2] * a.bbox[3] > b.bbox[2] * b.bbox[3] ? a : b
+              a.bbox[2] * a.bbox[3] > b.bbox[2] * b.bbox[3] ? a : b,
             );
 
             await processFace(largestFace, video, canvas);
@@ -311,17 +310,13 @@ export default function KioskPage() {
     // Check uniform if matched
     let uniformCheck: UniformCheckResult | null = null;
     if (match.matched && match.person && settingsRef.current.uniformEnabled) {
-      uniformCheck = await checkUniform(
-        video,
-        face.bbox,
-        match.person.uniform_type,
-        canvas
-      );
+      uniformCheck = await checkUniform(video, face.bbox, match.person.uniform_type, canvas);
       setLastUniform(uniformCheck);
     }
 
     // Determine access
-    const accessGranted = match.matched && (!settingsRef.current.uniformEnabled || (uniformCheck?.ok ?? true));
+    const accessGranted =
+      match.matched && (!settingsRef.current.uniformEnabled || (uniformCheck?.ok ?? true));
 
     if (accessGranted) {
       // Grant access
@@ -546,7 +541,7 @@ export default function KioskPage() {
       setSyncStatus(
         status.studentsDownloaded > 0 || status.logsUploaded > 0
           ? `Synced: ${status.studentsDownloaded} students, ${status.logsUploaded} logs`
-          : ""
+          : "",
       );
     } catch (err) {
       console.warn("[Kiosk] Background sync failed:", err);
@@ -566,7 +561,10 @@ export default function KioskPage() {
         canvas.width = img.naturalWidth || 640;
         canvas.height = img.naturalHeight || 480;
         const ctx = canvas.getContext("2d");
-        if (!ctx) { resolve(null); return; }
+        if (!ctx) {
+          resolve(null);
+          return;
+        }
         ctx.drawImage(img, 0, 0);
         resolve(canvas);
       };
@@ -604,7 +602,7 @@ export default function KioskPage() {
     setSyncStatus(
       status.error
         ? `Sync error: ${status.error}`
-        : `Synced: ${status.studentsDownloaded} students, ${status.logsUploaded} logs`
+        : `Synced: ${status.studentsDownloaded} students, ${status.logsUploaded} logs`,
     );
     refreshStats();
     setShowSyncPanel(false);
@@ -647,9 +645,7 @@ export default function KioskPage() {
 
       // 🔴 ACCURACY FIX #4: Check if embeddings need to be generated
       // A student needs processing if they have no embeddings and have photos
-      const needsProcessing = students.filter(
-        (s) => s.embeddings.length === 0 && s.photo_url
-      );
+      const needsProcessing = students.filter((s) => s.embeddings.length === 0 && s.photo_url);
       if (needsProcessing.length === 0) return;
 
       setStatusMessage(`Processing ${needsProcessing.length} student photos...`);
@@ -676,7 +672,7 @@ export default function KioskPage() {
             }
 
             const largestFace = faces.reduce((a, b) =>
-              a.bbox[2] * a.bbox[3] > b.bbox[2] * b.bbox[3] ? a : b
+              a.bbox[2] * a.bbox[3] > b.bbox[2] * b.bbox[3] ? a : b,
             );
 
             const embedding = await getFaceEmbeddingFromCanvas(photoCanvas, largestFace.bbox);
@@ -755,7 +751,7 @@ export default function KioskPage() {
       window.removeEventListener("online", handleOnline);
       window.removeEventListener("offline", handleOffline);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Only run once — syncInBackground and kioskState read via refs
 
   /**
@@ -802,7 +798,10 @@ export default function KioskPage() {
     <div className="relative w-screen h-screen bg-surface-950 overflow-hidden">
       {/* Hidden canvases for processing */}
       <canvas ref={canvasRef} className="hidden" />
-      <canvas ref={overlayCanvasRef} className="absolute inset-0 w-full h-full pointer-events-none z-10" />
+      <canvas
+        ref={overlayCanvasRef}
+        className="absolute inset-0 w-full h-full pointer-events-none z-10"
+      />
 
       {/* Camera Feed */}
       <video
@@ -824,10 +823,10 @@ export default function KioskPage() {
             kioskState === "granted"
               ? "scan-frame-active"
               : kioskState === "denied"
-              ? "scan-frame-deny"
-              : kioskState === "scanning"
-              ? "animate-pulse"
-              : ""
+                ? "scan-frame-deny"
+                : kioskState === "scanning"
+                  ? "animate-pulse"
+                  : ""
           }`}
         >
           <div className="scan-corner scan-corner-tl" />
@@ -846,28 +845,30 @@ export default function KioskPage() {
               kioskState === "ready" || kioskState === "granted"
                 ? "bg-green-500"
                 : kioskState === "error"
-                ? "bg-red-500"
-                : "bg-yellow-500 animate-pulse"
+                  ? "bg-red-500"
+                  : "bg-yellow-500 animate-pulse"
             }`}
           />
           <span className="text-white/80 font-medium text-sm">
             {kioskState === "granted"
               ? statusMessage
               : kioskState === "denied"
-              ? statusMessage
-              : kioskState === "loading_models"
-              ? "Loading..."
-              : kioskState === "scanning"
-              ? "Detecting..."
-              : kioskState === "error"
-              ? "Error"
-              : "Smart Gate"}
+                ? statusMessage
+                : kioskState === "loading_models"
+                  ? "Loading..."
+                  : kioskState === "scanning"
+                    ? "Detecting..."
+                    : kioskState === "error"
+                      ? "Error"
+                      : "Smart Gate"}
           </span>
         </div>
 
         <div className="flex items-center gap-5">
           {/* Online/Offline */}
-          <div className={`flex items-center gap-1.5 ${online ? "text-green-400" : "text-red-400"}`}>
+          <div
+            className={`flex items-center gap-1.5 ${online ? "text-green-400" : "text-red-400"}`}
+          >
             <div className={`w-2 h-2 rounded-full ${online ? "bg-green-400" : "bg-red-400"}`} />
             <span className="text-xs font-mono">{online ? "Online" : "Offline"}</span>
           </div>
@@ -898,7 +899,9 @@ export default function KioskPage() {
           <div className="flex flex-col items-center gap-5">
             <div className="w-16 h-16 border-[3px] border-primary-400 border-t-transparent rounded-full animate-spin" />
             <p className="text-white/80 text-lg font-medium">{statusMessage}</p>
-            <p className="text-white/40 text-sm">Loading AI models (first time may take a moment)</p>
+            <p className="text-white/40 text-sm">
+              Loading AI models (first time may take a moment)
+            </p>
           </div>
         </div>
       )}
@@ -907,7 +910,15 @@ export default function KioskPage() {
         <div className="absolute inset-0 flex items-center justify-center z-30 bg-surface-950/80">
           <div className="text-center space-y-4 max-w-md">
             <div className="w-16 h-16 mx-auto rounded-full bg-red-500/20 flex items-center justify-center">
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-red-400">
+              <svg
+                width="32"
+                height="32"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                className="text-red-400"
+              >
                 <circle cx="12" cy="12" r="10" />
                 <line x1="15" y1="9" x2="9" y2="15" />
                 <line x1="9" y1="9" x2="15" y2="15" />
@@ -915,10 +926,7 @@ export default function KioskPage() {
             </div>
             <p className="text-white/80 text-lg font-medium">System Error</p>
             <p className="text-white/50 text-sm">{statusMessage}</p>
-            <button
-              onClick={() => window.location.reload()}
-              className="btn-primary mt-4"
-            >
+            <button onClick={() => window.location.reload()} className="btn-primary mt-4">
               Restart Kiosk
             </button>
           </div>
@@ -953,14 +961,18 @@ export default function KioskPage() {
                   </p>
                 </div>
                 <div className="ml-auto text-right">
-                  <p className="text-green-400 font-mono text-sm">{(lastMatch.confidence * 100).toFixed(0)}%</p>
+                  <p className="text-green-400 font-mono text-sm">
+                    {(lastMatch.confidence * 100).toFixed(0)}%
+                  </p>
                   <p className="text-white/30 text-xs">match</p>
                 </div>
               </div>
               {lastUniform && (
-                <div className={`mt-2 pt-2 border-t border-white/10 text-xs ${
-                  lastUniform.ok ? "text-green-400" : "text-red-400"
-                }`}>
+                <div
+                  className={`mt-2 pt-2 border-t border-white/10 text-xs ${
+                    lastUniform.ok ? "text-green-400" : "text-red-400"
+                  }`}
+                >
                   Uniform: {lastUniform.ok ? "✓ PASS" : "✗ FAIL"} · {lastUniform.detail}
                 </div>
               )}
@@ -985,7 +997,15 @@ export default function KioskPage() {
             onClick={() => setShowSyncPanel(!showSyncPanel)}
             className="glass-card px-4 py-3 hover:bg-white/5 transition-colors"
           >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-white/60 mx-auto">
+            <svg
+              width="18"
+              height="18"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              className="text-white/60 mx-auto"
+            >
               <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
             </svg>
           </button>
@@ -1012,13 +1032,13 @@ export default function KioskPage() {
             </div>
             <div className="flex justify-between">
               <span className="text-white/50">Network</span>
-              <span className={online ? "text-green-400" : "text-red-400"}>{online ? "Online" : "Offline"}</span>
+              <span className={online ? "text-green-400" : "text-red-400"}>
+                {online ? "Online" : "Offline"}
+              </span>
             </div>
           </div>
 
-          {syncStatus && (
-            <p className="text-xs text-white/40">{syncStatus}</p>
-          )}
+          {syncStatus && <p className="text-xs text-white/40">{syncStatus}</p>}
 
           <button
             onClick={handleManualSync}

@@ -15,12 +15,7 @@
 const CACHE_PREFIX = "smart-gate-kiosk";
 
 // 🛡️ Static assets to cache on install
-const STATIC_ASSETS = [
-  "/",
-  "/manifest.json",
-  "/icon-192.png",
-  "/icon-512.png",
-];
+const STATIC_ASSETS = ["/", "/manifest.json", "/icon-192.png", "/icon-512.png"];
 
 // 🛡️ AI model URLs to cache for offline face recognition + detection
 // These are fetched in the `fetch` handler and cached on first access
@@ -43,7 +38,7 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(cacheName).then((cache) => {
       return cache.addAll(STATIC_ASSETS);
-    })
+    }),
   );
 
   // Store the cache name for the activate handler
@@ -54,18 +49,21 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((cacheNames) => {
-      return Promise.all(
-        cacheNames
-          .filter((name) => name.startsWith(CACHE_PREFIX))
-          // Keep only the MOST RECENT cache (delete others)
-          .sort()
-          .slice(0, -1)
-          .map((name) => caches.delete(name))
-      );
-    }).then(() => {
-      return self.clients.claim();
-    })
+    caches
+      .keys()
+      .then((cacheNames) => {
+        return Promise.all(
+          cacheNames
+            .filter((name) => name.startsWith(CACHE_PREFIX))
+            // Keep only the MOST RECENT cache (delete others)
+            .sort()
+            .slice(0, -1)
+            .map((name) => caches.delete(name)),
+        );
+      })
+      .then(() => {
+        return self.clients.claim();
+      }),
   );
 });
 
@@ -92,7 +90,7 @@ self.addEventListener("fetch", (event) => {
           }
           return response;
         });
-      })
+      }),
     );
     return;
   }
@@ -110,7 +108,7 @@ self.addEventListener("fetch", (event) => {
           }
         }
         return new Response("Offline", { status: 503 });
-      })
+      }),
     );
     return;
   }
@@ -145,6 +143,6 @@ self.addEventListener("fetch", (event) => {
           }
         }
         return new Response("Not found", { status: 404 });
-      })
+      }),
   );
 });

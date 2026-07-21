@@ -31,10 +31,9 @@ let requestCounter = 0;
 function getWorker(): Worker {
   if (inferenceWorker) return inferenceWorker;
 
-  inferenceWorker = new Worker(
-    new URL("./inference.worker.ts", import.meta.url),
-    { type: "module" }
-  );
+  inferenceWorker = new Worker(new URL("./inference.worker.ts", import.meta.url), {
+    type: "module",
+  });
 
   inferenceWorker.onmessage = (event: MessageEvent) => {
     const { type, id, data } = event.data;
@@ -75,7 +74,7 @@ export function sendToWorker(
   type: string,
   data?: unknown,
   transfer?: Transferable[],
-  timeoutMs: number = 60000
+  timeoutMs: number = 60000,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const id = `req_${++requestCounter}_${Date.now()}`;

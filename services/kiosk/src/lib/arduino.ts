@@ -30,7 +30,9 @@ interface SerialPort {
 }
 
 interface Serial {
-  requestPort(options?: { filters?: Array<{ usbVendorId?: number; usbProductId?: number }> }): Promise<SerialPort>;
+  requestPort(options?: {
+    filters?: Array<{ usbVendorId?: number; usbProductId?: number }>;
+  }): Promise<SerialPort>;
   getPorts(): Promise<SerialPort[]>;
 }
 
@@ -49,12 +51,7 @@ export interface ArduinoState {
 }
 
 export type ArduinoEventType =
-  | "button_press"
-  | "connected"
-  | "disconnected"
-  | "error"
-  | "reconnecting"
-  | "reconnect_failed";
+  "button_press" | "connected" | "disconnected" | "error" | "reconnecting" | "reconnect_failed";
 
 export interface ArduinoEvent {
   type: ArduinoEventType;

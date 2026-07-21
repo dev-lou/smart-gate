@@ -71,9 +71,7 @@ export default class ErrorBoundary extends Component<Props, State> {
             </div>
 
             {/* Title */}
-            <h1 className="text-2xl font-bold text-white mb-2">
-              Kiosk Encountered an Issue
-            </h1>
+            <h1 className="text-2xl font-bold text-white mb-2">Kiosk Encountered an Issue</h1>
 
             {/* Error message */}
             <p className="text-white/50 text-sm mb-6 font-mono bg-surface-900/50 rounded-lg p-3 border border-surface-800">
@@ -99,8 +97,8 @@ export default class ErrorBoundary extends Component<Props, State> {
 
             {/* Hint */}
             <p className="mt-8 text-xs text-white/20">
-              If this keeps happening, check the tablet&apos;s internet connection
-              or try restarting the device.
+              If this keeps happening, check the tablet&apos;s internet connection or try restarting
+              the device.
             </p>
           </div>
         </div>

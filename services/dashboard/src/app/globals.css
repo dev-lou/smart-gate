@@ -9,7 +9,8 @@
     padding: 0;
   }
 
-  html, body {
+  html,
+  body {
     @apply bg-surface-950 text-white;
     font-family: "Inter", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
