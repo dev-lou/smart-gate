@@ -45,13 +45,18 @@ let yoloWorkerInitialized = false;
 let classNames: UniformClass[] = [];
 let modelLoading = false;
 
-// Default class names (matches migration 002 default data)
-// Update these after training your custom YOLO model
+// Default class names (matches migration 004 real classes)
+// `name` MUST equal uniform_types.name in Supabase — the guard stores
+// that value as students.uniform_type, and checkUniform() matches on it.
+// Format matches the image files: <course>_<type>_uniform (e.g. chm_chef_uniform).
+// Update these after training your custom YOLO model.
 const DEFAULT_CLASSES: UniformClass[] = [
-  { id: 0, name: "BSIT_Uniform", label: "BSIT Uniform" },
-  { id: 1, name: "CHM_Uniform", label: "CHM Uniform" },
-  { id: 2, name: "COAGRI_Uniform", label: "COAGRI Uniform" },
-  { id: 3, name: "Education_Uniform", label: "Education Uniform" },
+  { id: 0, name: "education_female_uniform", label: "Education Female Uniform" },
+  { id: 1, name: "education_male_uniform", label: "Education Male Uniform" },
+  { id: 2, name: "chm_chef_uniform", label: "CHM Chef Uniform" },
+  { id: 3, name: "chm_fnb_uniform", label: "CHM F&B Uniform" },
+  { id: 4, name: "chm_front_office_uniform", label: "CHM Front Office Uniform" },
+  { id: 5, name: "chm_universal_uniform", label: "CHM Universal Uniform" },
 ];
 
 // YOLO model URL — replace with your trained model
@@ -132,7 +137,7 @@ export function setUniformClasses(classes: UniformClass[]): void {
  *
  * @param video - The video element with the camera feed
  * @param faceBbox - Face bounding box [x, y, w, h] as ratios
- * @param expectedUniform - The uniform type name expected (e.g., "BSIT Uniform")
+ * @param expectedUniform - The uniform type name expected (e.g., "chm_chef_uniform")
  * @param canvas - Canvas for drawing/processing
  * @returns Uniform check result
  */

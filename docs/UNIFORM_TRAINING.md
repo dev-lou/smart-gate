@@ -50,15 +50,20 @@ Take **100+ photos per uniform type** with your phone or camera.
 - Do NOT annotate shoes, pants, or accessories
 - Each uniform type = one class
 
-### Example Classes
+### Example Classes (your real ones)
 
 ```
-uniform_bsit        → BS Information Technology uniform
-uniform_chm         → BS Chemistry uniform
-uniform_coagri      → BS Agriculture uniform
-uniform_education   → Education uniform
-uniform_pe          → PE uniform
+education_female_uniform   → Education female uniform
+education_male_uniform     → Education male uniform
+chm_chef_uniform           → CHM chef uniform
+chm_fnb_uniform            → CHM food & beverage uniform
+chm_front_office_uniform   → CHM front office uniform
+chm_universal_uniform      → CHM universal uniform
 ```
+
+> The format is `<course>_<type>_uniform` — it matches your image files exactly (e.g. `agri_male_uniform_1.jpg` → class `agri_male_uniform`).
+> Follow the same format when you add BSIT/AGRI later (e.g. `bsit_male_uniform`, `agri_female_uniform`).
+> These names are already seeded in `database/migrations/004_uniform_types_real.sql`.
 
 ---
 
@@ -86,7 +91,7 @@ uniform_pe          → PE uniform
 
 1. Click **Annotate** on any image
 2. Draw a **bounding box** around the uniform top area
-3. Select the correct class (e.g., `uniform_bsit`)
+3. Select the correct class (e.g., `chm_chef_uniform`)
 4. Repeat for all images
 
 **Tips:**
@@ -231,8 +236,8 @@ You can test detection accuracy by:
 2. Pointing the camera at a person wearing the uniform
 3. Checking the console for detection results:
    ```
-   [Uniform] YOLO detected: uniform_bsit (confidence: 0.87)
-   [Uniform] Expected: uniform_bsit → Match!
+   [Uniform] YOLO detected: chm_chef_uniform (confidence: 0.87)
+   [Uniform] Expected: chm_chef_uniform → Match!
    ```
 
 ### Accuracy Expectations

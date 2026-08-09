@@ -1,6 +1,14 @@
 -- ============================================================
 -- Migration 002: Uniform Types & Course-Uniform Mapping
 -- ============================================================
+-- ⚠️⚠️⚠️ SUPERSEDED BY 004_uniform_types_real.sql — DO NOT RUN ⚠️⚠️⚠️
+--
+-- Migration 004 creates these tables itself and seeds the REAL
+-- uniform classes (education_female_uniform, chm_chef_uniform, etc.).
+-- Running this file now would only re-insert placeholder data.
+-- Run schema.sql → 003_add_sync_id.sql → 004_uniform_types_real.sql.
+--
+-- (Kept for reference only — original content below.)
 -- This is a SEPARATE migration file, NOT modifying the main schema.
 -- Run this AFTER database/schema.sql.
 --

@@ -92,8 +92,10 @@ pnpm install
 1. Create a [Supabase](https://supabase.com) project
 2. Go to **SQL Editor** → run `database/schema.sql`
 3. Run **all migrations** in `database/migrations/` in order:
-   - `002_uniform_types.sql` — uniform type definitions
    - `003_add_sync_id.sql` — log idempotency for crash-safe sync
+   - `004_uniform_types_real.sql` — real uniform classes (replaces `002`)
+
+   > ⚠️ **Skip `002_uniform_types.sql`** — it contained placeholder uniform data and is superseded by `004`.
 4. Create a **Storage bucket** named `student-photos` (Public)
 5. Copy your **Project URL** + **anon key** from Project Settings → API
 
@@ -245,8 +247,9 @@ smart-gate/
 ├── database/
 │   ├── schema.sql               # Full PostgreSQL schema
 │   └── migrations/
-│       ├── 002_uniform_types.sql    # Uniform type definitions
-│       └── 003_add_sync_id.sql      # Log idempotency (crash-safe sync)
+│       ├── 002_uniform_types.sql    # ⚠️ SUPERSEDED by 004 (placeholder data)
+│       ├── 003_add_sync_id.sql      # Log idempotency (crash-safe sync)
+│       └── 004_uniform_types_real.sql  # Real uniform classes (run this)
 │
 ├── hardware/
 │   └── arduino/

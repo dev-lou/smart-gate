@@ -56,8 +56,10 @@ This installs all dependencies for all 3 services (kiosk, guard, dashboard) via 
 2. Open `database/schema.sql` from your cloned repo
 3. Paste and run the entire file
 4. Do the same for all migrations in `database/migrations/` in order:
-   - `002_uniform_types.sql` — uniform type definitions
    - `003_add_sync_id.sql` — log idempotency for crash-safe sync
+   - `004_uniform_types_real.sql` — real uniform classes (replaces `002`)
+
+   > ⚠️ **Skip `002_uniform_types.sql`** — it contained placeholder uniform data and is superseded by `004_uniform_types_real.sql`.
 
 ### 2.3 Create Storage Bucket
 1. Go to **Storage** in the Supabase Dashboard

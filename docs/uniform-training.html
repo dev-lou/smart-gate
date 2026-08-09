@@ -158,7 +158,7 @@
 <div class="where-box">
   <span class="where-icon">☁️</span>
   <div class="where-text">
-    <strong>What goes to Supabase:</strong> NOT your photos. Only the uniform names (e.g. "BSIT Uniform" → class_id: 0). These are text records, not images.
+    <strong>What goes to Supabase:</strong> NOT your photos. Only the uniform names (e.g. "chm_chef_uniform" → class_id: 2). These are text records, not images.
   </div>
 </div>
 
@@ -179,10 +179,12 @@
   ──────────                         ───────────────              ──────────────              ────────────────────────
      📸 Take photos                      ☁️ Upload photos              💻 Train YOLO                 ☁️ Host .onnx file
         │                                    │                            │                              │
-        ├── BSIT photos (200) ─────────────► │                            │                              │
-        ├── CHM photos (200) ──────────────► │                            │                              │
-        ├── COAGRI photos (200) ───────────► │                            │                              │
-        └── Educ photos (200) ─────────────► │                            │                              │
+        ├── Education female (511) ────────► │                            │                              │
+        ├── Education male (505) ──────────► │                            │                              │
+        ├── CHM chef (553) ────────────────► │                            │                              │
+        ├── CHM F&B (450) ─────────────────► │                            │                              │
+        ├── CHM front office (172) ────────► │                            │                              │
+        └── CHM universal (530) ───────────► │                            │                              │
                                              │                            │                              │
         ◄── Draw boxes on each photo ────    │                            │                              │
         ◀── Download ZIP back ────────────   │                            │                              │
@@ -225,22 +227,32 @@
   </thead>
   <tbody>
     <tr>
-      <td>BSIT Uniform</td>
+      <td>Education Female Uniform</td>
       <td>100-200</td>
       <td><code>dataset/images/train/</code> (80%) + <code>dataset/images/val/</code> (20%)</td>
     </tr>
     <tr>
-      <td>CHM Uniform</td>
+      <td>Education Male Uniform</td>
       <td>100-200</td>
       <td>Same split</td>
     </tr>
     <tr>
-      <td>COAGRI Uniform</td>
+      <td>CHM Chef Uniform</td>
       <td>100-200</td>
       <td>Same split</td>
     </tr>
     <tr>
-      <td>Education Uniform</td>
+      <td>CHM F&amp;B Uniform</td>
+      <td>100-200</td>
+      <td>Same split</td>
+    </tr>
+    <tr>
+      <td>CHM Front Office Uniform</td>
+      <td>100-200</td>
+      <td>Same split</td>
+    </tr>
+    <tr>
+      <td>CHM Universal Uniform</td>
       <td>100-200</td>
       <td>Same split</td>
     </tr>
@@ -326,27 +338,27 @@
 <span class="folder">services/kiosk/training/dataset/</span>
 ├── <span class="folder">images/</span>
 │   ├── <span class="folder">train/</span>     <span class="arrow">← 📸</span> <span class="highlight">Put 80% of your photos HERE</span>
-│   │   ├── bsit_001.jpg
-│   │   ├── chm_001.jpg
+│   │   ├── education_male_uniform_1.jpg
+│   │   ├── chm_chef_uniform_1.jpg
 │   │   └── ...
 │   └── <span class="folder">val/</span>       <span class="arrow">← 📸</span> <span class="highlight">Put 20% of your photos HERE</span>
-│       ├── bsit_050.jpg
+│       ├── education_female_uniform_300.jpg
 │       └── ...
 ├── <span class="folder">labels/</span>
 │   ├── <span class="folder">train/</span>     <span class="arrow">← 🏷️</span> <span class="highlight">Put .txt label files that MATCH the train photos HERE</span>
-│   │   ├── bsit_001.txt
-│   │   ├── chm_001.txt
+│   │   ├── education_male_uniform_1.txt
+│   │   ├── chm_chef_uniform_1.txt
 │   │   └── ...
 │   └── <span class="folder">val/</span>       <span class="arrow">← 🏷️</span> <span class="highlight">Put .txt label files that MATCH the val photos HERE</span>
-│       ├── bsit_050.txt
+│       ├── education_female_uniform_300.txt
 │       └── ...
 └── <span class="file">uniform_dataset.yaml</span>   <span class="arrow">← ⚙️</span> This file already exists, just verify class names
 </div>
 
 <div class="warn-box">
 <strong>⚠️ IMPORTANT:</strong> Each photo MUST have a matching .txt file with the SAME name. Example:
-<br><code>bsit_001.jpg</code> → needs <code>bsit_001.txt</code>
-<br><code>bsit_002.jpg</code> → needs <code>bsit_002.txt</code>
+<br><code>education_male_uniform_1.jpg</code> → needs <code>education_male_uniform_1.txt</code>
+<br><code>chm_chef_uniform_1.jpg</code> → needs <code>chm_chef_uniform_1.txt</code>
 <br>If a photo has no .txt file, YOLO will ignore it or error.
 </div>
 
@@ -436,7 +448,7 @@ The <code>--fp16</code> flag is enabled by default, creating a ~6MB model optimi
 
 <div class="tip-box">
 <strong>💡 What's happening inside the training?</strong><br>
-YOLO looks at each photo and its label file. It learns: "When I see a blue shirt with a specific collar and logo, that's class 0 (BSIT). When I see a green shirt, that's class 1 (CHM)." After seeing hundreds of examples, it creates a mathematical model that can recognize uniforms it's never seen before — just like how you can recognize a friend's face even if you've never seen them in that exact lighting.
+YOLO looks at each photo and its label file. It learns: "When I see a white-and-green blouse with a specific collar and logo, that's class 0 (education_female_uniform). When I see a chef jacket with buttons, that's class 2 (chm_chef_uniform)." After seeing hundreds of examples, it creates a mathematical model that can recognize uniforms it's never seen before — just like how you can recognize a friend's face even if you've never seen them in that exact lighting.
 </div>
 
 <h3>📊 Good results:</h3>
@@ -485,18 +497,16 @@ cp runs/train/uniform_detector/weights/best.onnx ../public/models/uniform_yolo11
 <h2>🗄️ Step 7: Update Supabase with Uniform Names</h2>
 
 <div class="step-card">
-<p>The training script prints the class names and their order. For example:</p>
-<pre>Class 0: BSIT_Uniform
-Class 1: CHM_Uniform
-Class 2: COAGRI_Uniform
-Class 3: Education_Uniform</pre>
+<p>Create your Roboflow classes in the SAME order as the migration, so the class_ids match. Your real classes are:</p>
+<pre>Class 0: education_female_uniform
+Class 1: education_male_uniform
+Class 2: chm_chef_uniform
+Class 3: chm_fnb_uniform
+Class 4: chm_front_office_uniform
+Class 5: chm_universal_uniform</pre>
 
-<p>Update the migration file <code>database/migrations/002_uniform_types.sql</code> with the EXACT same order:</p>
-<pre>INSERT INTO uniform_types (name, description, class_id) VALUES
-    ('BSIT Uniform', 'BSIT department uniform', 0),
-    ('CHM Uniform', 'CHM department uniform', 1),
-    ('COAGRI Uniform', 'COAGRI department uniform', 2),
-    ('Education Uniform', 'Education department uniform', 3);</pre>
+<p>These are already inserted for you in <code>database/migrations/004_uniform_types_real.sql</code> (run it in the Supabase SQL Editor — it replaces the old placeholder data).
+When you add BSIT/AGRI later, follow the same <code>&lt;course&gt;_&lt;type&gt;_uniform</code> format (e.g. <code>bsit_male_uniform</code>, <code>agri_female_uniform</code>).</p>
 
 <div class="warn-box">
 <strong>⚠️ CRITICAL:</strong> class_id in Supabase MUST match the YOLO model's class order. If your model says "Class 0: CHM_Uniform", then CHM must be class_id=0 in Supabase. They must be in the EXACT same order.

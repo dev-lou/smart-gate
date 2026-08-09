@@ -24,7 +24,7 @@ except ImportError:
 # ─── Configuration ───────────────────────────────────────────
 
 # Path to your dataset YAML file
-DATASET_YAML = "dataset/uniform_dataset.yaml"
+DATASET_YAML = "dataset/data.yaml"
 
 # Model size: "n" (nano) for browser, "s" (small) for more accuracy
 MODEL_SIZE = "n"  # Options: n, s, m, l, x

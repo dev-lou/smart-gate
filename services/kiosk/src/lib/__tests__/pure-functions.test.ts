@@ -155,7 +155,7 @@ describe("matchFace", () => {
     name,
     student_id: `2024-${id}`,
     department: "BSIT",
-    uniform_type: "BSIT Uniform",
+    uniform_type: "education_male_uniform",
     embeddings: [makeNormalized(dim, parseInt(id)), makeNormalized(dim, parseInt(id) + 100)],
   });
 

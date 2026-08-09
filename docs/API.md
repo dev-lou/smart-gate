@@ -39,7 +39,7 @@ const { error } = await supabase
     name: "Juan Dela Cruz",
     student_id: "2024-001",
     department: "BSIT",
-    uniform_type: "uniform_bsit",
+    uniform_type: "chm_chef_uniform",
     photo_url: JSON.stringify(["url1.jpg", "url2.jpg", "url3.jpg"]),
     is_active: true,
   });
