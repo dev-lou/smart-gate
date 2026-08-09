@@ -43,6 +43,7 @@ Thumbs.db
 # ============================================================
 *.pt
 *.onnx
+!services/kiosk/public/models/*.onnx
 *.engine
 *.zip
 Uniform_left/
