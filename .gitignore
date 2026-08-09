@@ -45,8 +45,6 @@ Thumbs.db
 *.onnx
 *.engine
 *.zip
-services/kiosk/training/dataset/
-services/kiosk/training/runs/
 Uniform_left/
 
 # ============================================================

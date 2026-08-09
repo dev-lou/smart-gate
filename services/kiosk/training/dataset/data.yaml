@@ -1,0 +1,14 @@
+path: dataset
+train: train/images
+val: valid/images
+test: test/images
+
+nc: 2
+names: ['education_female_uniform', 'education_male_uniform']
+
+roboflow:
+  workspace: lou-vincent-j-baroro-s-workspace
+  project: smart-gate-uniforms2
+  version: 3
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/lou-vincent-j-baroro-s-workspace/smart-gate-uniforms2/dataset/3
