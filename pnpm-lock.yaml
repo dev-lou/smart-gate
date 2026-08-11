@@ -113,8 +113,8 @@ importers:
   services/kiosk:
     dependencies:
       '@mediapipe/tasks-vision':
-        specifier: ^0.10.18
-        version: 0.10.35
+        specifier: ^1.0.1
+        version: 1.0.1
       '@supabase/supabase-js':
         specifier: ^2.39.0
         version: 2.110.7
@@ -584,8 +584,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
 
-  '@mediapipe/tasks-vision@0.10.35':
-    resolution: {integrity: sha512-HOvadwVRE6JC+45nyYhmnywnr5h/J8KZvOeUNVOG9q/0875pZgItznFB9bRTvLc264YSJqiZ1NsIpCStJw/egg==}
+  '@mediapipe/tasks-vision@1.0.1':
+    resolution: {integrity: sha512-rvRE2FmAZ6ZxKSw7wq+e+jQDpN3t1B/tD2mJz9SmAzb1msoDkd4dMoE4wAh8Z30Um0PQwLiHr9QtomhmXk3aUQ==}
 
   '@next/env@16.2.10':
     resolution: {integrity: sha512-zLPxg9M0MEHmygpj5OuxjQ+vHMiy/K7cSp74G8ecYolmgUWw0RwN02tF56npup/+qaI8JB97hQgS/r2Hb6QwVA==}
@@ -2004,7 +2004,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@mediapipe/tasks-vision@0.10.35': {}
+  '@mediapipe/tasks-vision@1.0.1': {}
 
   '@next/env@16.2.10': {}
 
