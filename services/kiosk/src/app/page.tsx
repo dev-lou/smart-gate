@@ -41,6 +41,7 @@ import {
   type StoredStudent,
 } from "@/lib/db";
 import { fullSync, initSupabase } from "@/lib/supabase";
+import { ShieldCheck, Wifi, WifiOff, Plug, RefreshCw, AlertCircle, XCircle, Link, CheckCircle2 } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -795,7 +796,7 @@ export default function KioskPage() {
   // ─── Render ─────────────────────────────────────────────
 
   return (
-    <div className="relative w-screen h-screen bg-surface-950 overflow-hidden">
+    <div className="relative w-screen h-screen bg-surface-50 overflow-hidden">
       {/* Hidden canvases for processing */}
       <canvas ref={canvasRef} className="hidden" />
       <canvas
@@ -812,9 +813,9 @@ export default function KioskPage() {
         className="absolute inset-0 w-full h-full object-cover"
       />
 
-      {/* Gradient overlays for readability */}
-      <div className="absolute top-0 left-0 right-0 h-32 bg-gradient-to-b from-surface-950/80 to-transparent z-20" />
-      <div className="absolute bottom-0 left-0 right-0 h-40 bg-gradient-to-t from-surface-950/80 to-transparent z-20" />
+      {/* Premium White Gradients for Readability */}
+      <div className="absolute top-0 left-0 right-0 h-32 bg-gradient-to-b from-white/90 to-transparent z-20" />
+      <div className="absolute bottom-0 left-0 right-0 h-40 bg-gradient-to-t from-white/90 to-transparent z-20" />
 
       {/* Scan Frame - hidden when models are loading */}
       {kioskState !== "init" && kioskState !== "loading_models" && (
@@ -837,97 +838,98 @@ export default function KioskPage() {
       )}
 
       {/* ─── Top Bar ─────────────────────────────────── */}
-      <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-6 py-4 z-30">
-        <div className="flex items-center gap-3">
+      <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-8 py-6 z-30">
+        <div className="flex items-center gap-4">
           {/* Status indicator */}
-          <div
-            className={`w-3 h-3 rounded-full ${
-              kioskState === "ready" || kioskState === "granted"
-                ? "bg-green-500"
-                : kioskState === "error"
-                  ? "bg-red-500"
-                  : "bg-yellow-500 animate-pulse"
-            }`}
-          />
-          <span className="text-white/80 font-medium text-sm">
-            {kioskState === "granted"
-              ? statusMessage
-              : kioskState === "denied"
+          <div className="glass-card-light px-4 py-2 flex items-center gap-3">
+            <div
+              className={`w-2.5 h-2.5 rounded-full ${
+                kioskState === "ready" || kioskState === "granted"
+                  ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"
+                  : kioskState === "error"
+                    ? "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]"
+                    : "bg-yellow-500 animate-pulse"
+              }`}
+            />
+            <span className="text-surface-700 font-semibold text-sm tracking-wide">
+              {kioskState === "granted"
                 ? statusMessage
-                : kioskState === "loading_models"
-                  ? "Loading..."
-                  : kioskState === "scanning"
-                    ? "Detecting..."
-                    : kioskState === "error"
-                      ? "Error"
-                      : "Smart Gate"}
-          </span>
+                : kioskState === "denied"
+                  ? statusMessage
+                  : kioskState === "loading_models"
+                    ? "System Initializing..."
+                    : kioskState === "scanning"
+                      ? "Analyzing..."
+                      : kioskState === "error"
+                        ? "System Fault"
+                        : "Smart Gate Active"}
+            </span>
+          </div>
         </div>
 
-        <div className="flex items-center gap-5">
+        <div className="flex items-center gap-4">
           {/* Online/Offline */}
-          <div
-            className={`flex items-center gap-1.5 ${online ? "text-green-400" : "text-red-400"}`}
-          >
-            <div className={`w-2 h-2 rounded-full ${online ? "bg-green-400" : "bg-red-400"}`} />
-            <span className="text-xs font-mono">{online ? "Online" : "Offline"}</span>
+          <div className="glass-card-light px-4 py-2 flex items-center gap-2">
+            {online ? (
+              <Wifi className="w-4 h-4 text-green-600" />
+            ) : (
+              <WifiOff className="w-4 h-4 text-red-500" />
+            )}
+            <span className={`text-xs font-semibold ${online ? "text-green-700" : "text-red-600"}`}>
+              {online ? "Connected" : "Offline"}
+            </span>
           </div>
 
           {/* FPS */}
-          <span className="text-white/40 text-xs font-mono">{fps} fps</span>
+          <div className="glass-card-light px-4 py-2">
+            <span className="text-surface-400 text-xs font-mono font-semibold">{fps} FPS</span>
+          </div>
 
           {/* Arduino */}
-          {arduinoConnected ? (
-            <span className="text-xs text-green-400 flex items-center gap-1">🔌 Arduino</span>
-          ) : (
-            <button
-              onClick={handleConnectArduino}
-              className="text-xs text-surface-400 hover:text-white transition-colors"
-            >
-              🔗 Connect Arduino
-            </button>
-          )}
-
-          {/* Spacer for alignment */}
-          <div className="w-8" />
+          <div className="glass-card-light px-4 py-2">
+            {arduinoConnected ? (
+              <span className="text-xs text-green-700 font-semibold flex items-center gap-2">
+                <Plug className="w-4 h-4" /> Hardware Active
+              </span>
+            ) : (
+              <button
+                onClick={handleConnectArduino}
+                className="text-xs text-surface-500 hover:text-primary-600 font-semibold flex items-center gap-2 transition-colors"
+              >
+                <Link className="w-4 h-4" /> Connect Hardware
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
       {/* ─── Center Status ───────────────────────────── */}
       {kioskState === "loading_models" && (
-        <div className="absolute inset-0 flex items-center justify-center z-30 bg-surface-950/60">
-          <div className="flex flex-col items-center gap-5">
-            <div className="w-16 h-16 border-[3px] border-primary-400 border-t-transparent rounded-full animate-spin" />
-            <p className="text-white/80 text-lg font-medium">{statusMessage}</p>
-            <p className="text-white/40 text-sm">
-              Loading AI models (first time may take a moment)
-            </p>
+        <div className="absolute inset-0 flex items-center justify-center z-30 bg-white/60 backdrop-blur-md">
+          <div className="flex flex-col items-center gap-6 glass-card p-10">
+            <RefreshCw className="w-12 h-12 text-primary-600 animate-spin" />
+            <div className="text-center">
+              <p className="text-surface-900 text-xl font-semibold mb-1">{statusMessage}</p>
+              <p className="text-surface-500 text-sm">
+                Initializing enterprise AI models. Please wait.
+              </p>
+            </div>
           </div>
         </div>
       )}
 
       {kioskState === "error" && (
-        <div className="absolute inset-0 flex items-center justify-center z-30 bg-surface-950/80">
-          <div className="text-center space-y-4 max-w-md">
-            <div className="w-16 h-16 mx-auto rounded-full bg-red-500/20 flex items-center justify-center">
-              <svg
-                width="32"
-                height="32"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                className="text-red-400"
-              >
-                <circle cx="12" cy="12" r="10" />
-                <line x1="15" y1="9" x2="9" y2="15" />
-                <line x1="9" y1="9" x2="15" y2="15" />
-              </svg>
+        <div className="absolute inset-0 flex items-center justify-center z-30 bg-white/80 backdrop-blur-md">
+          <div className="text-center space-y-6 max-w-md glass-card p-10">
+            <div className="w-20 h-20 mx-auto rounded-full bg-red-50 flex items-center justify-center">
+              <AlertCircle className="w-10 h-10 text-red-500" />
             </div>
-            <p className="text-white/80 text-lg font-medium">System Error</p>
-            <p className="text-white/50 text-sm">{statusMessage}</p>
-            <button onClick={() => window.location.reload()} className="btn-primary mt-4">
-              Restart Kiosk
+            <div>
+              <p className="text-surface-900 text-xl font-bold mb-2">System Fault</p>
+              <p className="text-surface-600 text-sm">{statusMessage}</p>
+            </div>
+            <button onClick={() => window.location.reload()} className="btn-primary w-full">
+              Reboot Terminal
             </button>
           </div>
         </div>
@@ -936,137 +938,136 @@ export default function KioskPage() {
       {/* ─── Grant/Deny Flash ────────────────────────── */}
       {kioskState === "granted" && (
         <div className="absolute inset-0 z-20 pointer-events-none">
-          <div className="absolute inset-0 bg-green-500/5 animate-pulse" />
+          <div className="absolute inset-0 bg-green-500/10 animate-pulse" />
         </div>
       )}
 
       {kioskState === "denied" && (
         <div className="absolute inset-0 z-20 pointer-events-none">
-          <div className="absolute inset-0 bg-red-500/5 animate-pulse" />
+          <div className="absolute inset-0 bg-red-500/10 animate-pulse" />
         </div>
       )}
 
       {/* ─── Bottom Status Panel ────────────────────── */}
-      <div className="absolute bottom-6 left-6 right-6 flex items-end justify-between z-30">
+      <div className="absolute bottom-8 left-8 right-8 flex items-end justify-between z-30">
         {/* Left: Match Info */}
-        <div className="space-y-3">
+        <div className="space-y-4">
           {lastMatch?.matched && lastMatch.person ? (
-            <div className="glass-card px-5 py-4 min-w-64">
-              <div className="flex items-center gap-3">
-                <div className="w-3 h-3 rounded-full bg-green-500" />
+            <div className="glass-card p-6 min-w-80 shadow-lg">
+              <div className="flex items-center gap-4">
+                <CheckCircle2 className="w-10 h-10 text-green-500" />
                 <div>
-                  <p className="text-white font-bold text-lg">{lastMatch.person.name}</p>
-                  <p className="text-white/50 text-xs">
-                    {lastMatch.person.department} · {lastMatch.person.student_id}
+                  <p className="text-surface-900 font-bold text-xl tracking-tight">
+                    {lastMatch.person.name}
+                  </p>
+                  <p className="text-surface-500 font-medium text-sm mt-0.5">
+                    {lastMatch.person.department} • {lastMatch.person.student_id}
                   </p>
                 </div>
-                <div className="ml-auto text-right">
-                  <p className="text-green-400 font-mono text-sm">
+                <div className="ml-auto text-right bg-green-50 px-3 py-1.5 rounded-lg">
+                  <p className="text-green-700 font-mono font-bold text-lg">
                     {(lastMatch.confidence * 100).toFixed(0)}%
                   </p>
-                  <p className="text-white/30 text-xs">match</p>
+                  <p className="text-green-600/70 text-xs font-semibold uppercase tracking-wider">Match</p>
                 </div>
               </div>
               {lastUniform && (
                 <div
-                  className={`mt-2 pt-2 border-t border-white/10 text-xs ${
-                    lastUniform.ok ? "text-green-400" : "text-red-400"
+                  className={`mt-4 pt-3 border-t border-surface-200/60 text-sm font-medium flex items-center gap-2 ${
+                    lastUniform.ok ? "text-green-700" : "text-red-600"
                   }`}
                 >
-                  Uniform: {lastUniform.ok ? "✓ PASS" : "✗ FAIL"} · {lastUniform.detail}
+                  {lastUniform.ok ? <ShieldCheck className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
+                  <span>
+                    Uniform Validation: {lastUniform.ok ? "PASS" : "FAIL"} — {lastUniform.detail}
+                  </span>
                 </div>
               )}
             </div>
           ) : kioskState === "ready" ? (
-            <div className="glass-card px-5 py-4">
-              <p className="text-white/50 text-sm">Waiting for face...</p>
+            <div className="glass-card px-6 py-4 flex items-center gap-3">
+              <div className="w-2 h-2 rounded-full bg-primary-500 animate-pulse" />
+              <p className="text-surface-500 font-medium tracking-wide">Awaiting Subject...</p>
             </div>
           ) : null}
         </div>
 
         {/* Right: Quick controls */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-4">
           {/* Enrolled count */}
-          <div className="glass-card px-4 py-3 text-center">
-            <p className="text-white font-bold text-lg">{enrolledCount}</p>
-            <p className="text-white/40 text-xs">enrolled</p>
+          <div className="glass-card px-6 py-4 text-center">
+            <p className="text-surface-900 font-bold text-2xl tracking-tight">{enrolledCount}</p>
+            <p className="text-surface-500 text-xs font-semibold uppercase tracking-wider mt-1">Profiles</p>
           </div>
 
           {/* Sync button */}
           <button
             onClick={() => setShowSyncPanel(!showSyncPanel)}
-            className="glass-card px-4 py-3 hover:bg-white/5 transition-colors"
+            className="glass-card p-5 hover:bg-surface-50 active:bg-surface-100 transition-colors cursor-pointer"
           >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              className="text-white/60 mx-auto"
-            >
-              <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2" />
-            </svg>
+            <RefreshCw className="w-6 h-6 text-surface-600" />
           </button>
         </div>
       </div>
 
       {/* ─── Sync Panel ──────────────────────────────── */}
       {showSyncPanel && (
-        <div className="absolute top-20 right-6 z-40 glass-card p-5 min-w-72 space-y-4">
-          <h3 className="font-semibold text-white">Sync Settings</h3>
+        <div className="absolute bottom-32 right-8 z-40 glass-card p-6 min-w-80 shadow-xl space-y-6">
+          <div className="flex items-center justify-between">
+            <h3 className="font-bold text-surface-900 tracking-tight text-lg">System Synchronization</h3>
+            <button onClick={() => setShowSyncPanel(false)} className="text-surface-400 hover:text-surface-600">
+              <XCircle className="w-5 h-5" />
+            </button>
+          </div>
 
-          <div className="space-y-2 text-sm">
+          <div className="space-y-3 text-sm font-medium bg-surface-50/50 p-4 rounded-xl border border-surface-100">
             <div className="flex justify-between">
-              <span className="text-white/50">Students</span>
-              <span className="text-white font-mono">{dbStats.studentCount}</span>
+              <span className="text-surface-500">Active Profiles</span>
+              <span className="text-surface-900 font-mono">{dbStats.studentCount}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-white/50">Logs stored</span>
-              <span className="text-white font-mono">{dbStats.logCount}</span>
+              <span className="text-surface-500">Activity Logs</span>
+              <span className="text-surface-900 font-mono">{dbStats.logCount}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-white/50">Unsynced logs</span>
-              <span className="text-yellow-400 font-mono">{dbStats.unsyncedCount}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-white/50">Network</span>
-              <span className={online ? "text-green-400" : "text-red-400"}>
-                {online ? "Online" : "Offline"}
-              </span>
+              <span className="text-surface-500">Pending Sync</span>
+              <span className="text-amber-600 font-mono">{dbStats.unsyncedCount}</span>
             </div>
           </div>
 
-          {syncStatus && <p className="text-xs text-white/40">{syncStatus}</p>}
+          {syncStatus && (
+            <div className="bg-primary-50 text-primary-700 p-3 rounded-lg text-sm font-medium border border-primary-100">
+              {syncStatus}
+            </div>
+          )}
 
-          <button
-            onClick={handleManualSync}
-            className="btn-primary w-full text-sm disabled:opacity-50"
-            disabled={!online}
-          >
-            Sync Now
-          </button>
+          <div className="space-y-3">
+            <button
+              onClick={handleManualSync}
+              className="btn-primary w-full flex items-center justify-center gap-2"
+              disabled={!online}
+            >
+              <RefreshCw className="w-4 h-4" /> Force Sync
+            </button>
 
-          <button
-            onClick={handleConnectArduino}
-            className={`w-full text-sm px-4 py-2.5 rounded-xl font-semibold transition-all duration-200 ${
-              arduinoConnected
-                ? "bg-green-600/20 text-green-400 border border-green-500/30"
-                : "bg-surface-700 hover:bg-surface-600 text-white/70"
-            }`}
-          >
-            {arduinoConnected ? "✅ Arduino Connected" : "🔌 Connect Arduino"}
-          </button>
-
-          <button
-            onClick={() => setShowSyncPanel(false)}
-            className="text-xs text-white/30 hover:text-white/50 transition-colors w-full"
-          >
-            Close
-          </button>
+            <button
+              onClick={handleConnectArduino}
+              className={`w-full text-sm px-5 py-3 rounded-xl font-bold transition-all duration-200 flex items-center justify-center gap-2 ${
+                arduinoConnected
+                  ? "bg-green-50 text-green-700 border border-green-200"
+                  : "bg-surface-100 hover:bg-surface-200 text-surface-700 border border-surface-200"
+              }`}
+            >
+              {arduinoConnected ? (
+                <><CheckCircle2 className="w-4 h-4" /> Hardware Linked</>
+              ) : (
+                <><Plug className="w-4 h-4" /> Bind Hardware</>
+              )}
+            </button>
+          </div>
         </div>
       )}
     </div>
   );
 }
+

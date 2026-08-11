@@ -46,7 +46,7 @@ export default class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return (
-        <div className="relative w-screen h-screen bg-surface-950 flex items-center justify-center overflow-hidden">
+        <div className="relative w-screen h-screen bg-surface-50 flex items-center justify-center overflow-hidden">
           {/* Subtle background animation */}
           <div className="absolute inset-0 opacity-5">
             <div className="absolute inset-0 bg-gradient-to-br from-red-500 via-transparent to-surface-950" />

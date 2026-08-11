@@ -11,7 +11,7 @@
 
   html,
   body {
-    @apply bg-surface-950 text-white overflow-hidden;
+    @apply bg-surface-50 text-surface-900 overflow-hidden;
     font-family: "Inter", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -27,18 +27,18 @@
   /* Fullscreen kiosk mode - hide browser chrome */
   @media (display-mode: fullscreen) {
     body {
-      background: #020617;
+      background: #f8fafc;
     }
   }
 }
 
 @layer components {
   .glass-card {
-    @apply bg-surface-900/80 backdrop-blur-xl border border-white/10 rounded-2xl;
+    @apply bg-white/80 backdrop-blur-xl border border-surface-200/50 shadow-sm rounded-2xl;
   }
 
   .glass-card-light {
-    @apply bg-surface-800/60 backdrop-blur-lg border border-white/10 rounded-2xl;
+    @apply bg-white/60 backdrop-blur-lg border border-surface-200/50 shadow-sm rounded-2xl;
   }
 
   .scan-frame {

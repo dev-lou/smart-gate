@@ -47,6 +47,8 @@ Thumbs.db
 *.engine
 *.zip
 Uniform_left/
+!services/kiosk/training/dataset/
+!services/kiosk/training/runs/
 
 # ============================================================
 # Misc

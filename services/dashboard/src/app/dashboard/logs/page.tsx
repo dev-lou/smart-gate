@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
+import { ClipboardList, RefreshCw, CheckCircle2, XCircle, SearchX } from "lucide-react";
 
 interface AccessLog {
   id: string;
@@ -92,14 +93,20 @@ export default function LogsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-surface-950 p-6">
+    <div className="min-h-screen p-6">
       <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-2xl font-bold text-white">📋 Access Logs</h1>
-          <p className="text-surface-400 text-sm mt-1">{logs.length} events in selected period</p>
+        <div className="flex items-center gap-3">
+          <div className="w-12 h-12 bg-white rounded-xl shadow-sm border border-surface-200 flex items-center justify-center">
+            <ClipboardList className="w-6 h-6 text-primary-600" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold text-surface-900">Access Logs</h1>
+            <p className="text-surface-500 font-medium text-sm mt-1">{logs.length} events in selected period</p>
+          </div>
         </div>
-        <button onClick={loadLogs} className="btn-secondary text-sm">
-          🔄 Refresh
+        <button onClick={loadLogs} className="btn-secondary text-sm flex items-center gap-2">
+          <RefreshCw className="w-4 h-4" />
+          Refresh
         </button>
       </div>
 
@@ -110,13 +117,15 @@ export default function LogsPage() {
             <button
               key={f}
               onClick={() => setFilter(f)}
-              className={`px-4 py-2 rounded-xl text-sm font-medium transition-colors ${
+              className={`px-4 py-2 rounded-xl text-sm font-bold transition-colors flex items-center gap-2 ${
                 filter === f
-                  ? "bg-primary-600 text-white"
-                  : "bg-surface-800 text-surface-400 hover:bg-surface-700"
+                  ? "bg-primary-600 text-white shadow-md"
+                  : "bg-white border border-surface-200 text-surface-700 hover:bg-surface-50"
               }`}
             >
-              {f === "all" ? "All" : f === "granted" ? "✅ Granted" : "❌ Denied"}
+              {f === "granted" && <CheckCircle2 className="w-4 h-4" />}
+              {f === "denied" && <XCircle className="w-4 h-4" />}
+              {f === "all" ? "All" : f === "granted" ? "Granted" : "Denied"}
             </button>
           ))}
         </div>
@@ -124,7 +133,7 @@ export default function LogsPage() {
         <select
           value={dateRange}
           onChange={(e) => setDateRange(e.target.value)}
-          className="px-4 py-2 bg-surface-800 border border-surface-700 rounded-xl text-white text-sm focus:border-primary-500 focus:outline-none"
+          className="px-4 py-2 bg-white border border-surface-200 rounded-xl text-surface-900 font-bold text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
         >
           <option value="1h">Last hour</option>
           <option value="24h">Last 24 hours</option>
@@ -134,16 +143,24 @@ export default function LogsPage() {
       </div>
 
       {/* Logs */}
-      <div className="glass-card overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-sm border border-surface-200 overflow-hidden">
         {loading ? (
-          <div className="p-12 text-center text-surface-400">Loading...</div>
+          <div className="p-12 text-center text-surface-500 font-medium">Loading...</div>
         ) : logs.length === 0 ? (
-          <div className="p-12 text-center text-surface-400">No access logs found</div>
+          <div className="p-16 flex flex-col items-center justify-center text-center">
+            <div className="w-20 h-20 bg-surface-50 rounded-full flex items-center justify-center mb-4 border border-surface-100">
+              <SearchX className="w-10 h-10 text-surface-300" />
+            </div>
+            <h3 className="text-lg font-bold text-surface-900 mb-1">No Access Logs Found</h3>
+            <p className="text-surface-500 font-medium text-sm max-w-sm">
+              There are no access attempts matching your current filters or date range.
+            </p>
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-surface-800">
+                <tr className="border-b border-surface-100 bg-surface-50/50">
                   <th className="table-header">Time</th>
                   <th className="table-header">Person</th>
                   <th className="table-header">Type</th>
@@ -158,46 +175,47 @@ export default function LogsPage() {
                 {logs.map((log) => (
                   <tr
                     key={log.id}
-                    className="border-b border-surface-800/50 hover:bg-surface-800/30 transition-colors"
+                    className="border-b border-surface-50 hover:bg-surface-50 transition-colors"
                   >
-                    <td className="table-cell text-surface-400 text-xs whitespace-nowrap">
+                    <td className="table-cell text-surface-500 font-medium text-xs whitespace-nowrap">
                       {formatTimestamp(log.created_at)}
                     </td>
-                    <td className="table-cell font-medium text-white">
+                    <td className="table-cell font-bold text-surface-900">
                       {log.person_name || "Unknown"}
                     </td>
-                    <td className="table-cell text-surface-400 text-xs">
+                    <td className="table-cell text-surface-500 font-medium text-xs">
                       {log.person_type || "—"}
                     </td>
                     <td className="table-cell">
-                      <span className="text-xs font-mono text-surface-400 uppercase">
+                      <span className="text-xs font-bold font-mono text-surface-500 uppercase">
                         {log.method}
                       </span>
                     </td>
                     <td className="table-cell">
                       <span
-                        className={`px-2 py-1 rounded-md text-xs font-medium ${
+                        className={`px-2 py-1 rounded-md text-xs font-bold flex items-center gap-1 w-max ${
                           log.success
-                            ? "bg-green-500/10 text-green-400"
-                            : "bg-red-500/10 text-red-400"
+                            ? "bg-green-50 text-green-700"
+                            : "bg-red-50 text-red-700"
                         }`}
                       >
+                        {log.success ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
                         {log.success ? "GRANTED" : "DENIED"}
                       </span>
                     </td>
-                    <td className="table-cell font-mono text-xs text-surface-400">
+                    <td className="table-cell font-mono font-medium text-xs text-surface-500">
                       {log.confidence ? `${(log.confidence * 100).toFixed(0)}%` : "—"}
                     </td>
                     <td className="table-cell">
                       {log.uniform_ok !== null ? (
-                        <span className={log.uniform_ok ? "text-green-400" : "text-red-400"}>
-                          {log.uniform_ok ? "✓ OK" : "✗ FAIL"}
+                        <span className={`font-bold flex items-center gap-1 text-xs ${log.uniform_ok ? "text-green-600" : "text-red-600"}`}>
+                          {log.uniform_ok ? <><CheckCircle2 className="w-3 h-3"/> OK</> : <><XCircle className="w-3 h-3"/> FAIL</>}
                         </span>
                       ) : (
-                        <span className="text-surface-500">—</span>
+                        <span className="text-surface-400 font-medium">—</span>
                       )}
                     </td>
-                    <td className="table-cell text-surface-400 text-xs max-w-48 truncate">
+                    <td className="table-cell text-surface-500 font-medium text-xs max-w-48 truncate">
                       {log.failure_reason || "—"}
                     </td>
                   </tr>

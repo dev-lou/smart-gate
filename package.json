@@ -8,7 +8,7 @@
     "dev:dashboard": "pnpm --filter @smart-gate/dashboard dev",
     "dev:guard": "pnpm --filter @smart-gate/guard dev",
     "dev:kiosk": "pnpm --filter @smart-gate/kiosk dev",
-    "dev": "pnpm dev:dashboard & pnpm dev:guard & pnpm dev:kiosk",
+    "dev": "pnpm -r --parallel dev",
     "build:dashboard": "pnpm --filter @smart-gate/dashboard build",
     "build:guard": "pnpm --filter @smart-gate/guard build",
     "build:kiosk": "pnpm --filter @smart-gate/kiosk build",
