@@ -67,7 +67,8 @@
 | **ArcFace + ONNX** | Face recognition | **99.4% LFW accuracy**, in-browser with WebGPU |
 | **YOLO11n + ONNX** | Uniform detection | Custom-trained on your uniforms |
 | **ONNX Runtime Web** | AI inference engine | Runs ONNX models in browser via Web Worker |
-| **Web Serial API** | Hardware communication | Arduino control from browser (USB-OTG) |
+| **ESP32 Wi-Fi (WebSocket)** | Gate control (primary) | Tablet ↔ ESP32 over its own hotspot — no cable, no internet |
+| **Web Serial API** | Gate control (fallback) | Arduino via USB-OTG when no ESP32 is present |
 | **Tailwind CSS** | Styling | Utility-first, consistent design across services |
 | **Vercel** | Deployment | Free tier, native Next.js support |
 
@@ -77,7 +78,9 @@
 - Node.js 20+ with **pnpm 9+**
 - Android tablet with Chrome (or any device with camera)
 - Supabase account (free tier)
-- Arduino Uno + Servo + Button (optional — simulation mode works)
+- ESP32 DevKit V1 (WROOM-32) + Servo + Button **(recommended — Wi-Fi gate control)**
+- Or Arduino Uno + Servo + Button (fallback — Web Serial)
+- No hardware at all works too (simulation mode)
 
 ### 1. Clone & Install
 
@@ -94,8 +97,15 @@ pnpm install
 3. Run **all migrations** in `database/migrations/` in order:
    - `003_add_sync_id.sql` — log idempotency for crash-safe sync
    - `004_uniform_types_real.sql` — real uniform classes (replaces `002`)
+   - `005_align_uniforms_to_model.sql` — **aligns class ids to the trained 9-class YOLO model** (CBMSD/CICI/COAG/Education). Required for uniform detection to work with the deployed `uniform_yolo11n.onnx`.
+   - `006_compatibility_security.sql` — **required for resumed/older projects**: adds missing access-log columns, server-side deduplication, authenticated Guard/Dashboard writes, and Storage policies.
+   - `007_gate_health.sql` — **gate feedback + kiosk health**: adds `gate_state` to access logs and the `kiosk_heartbeats` table for the Dashboard's Kiosk Health page.
+   - `008_guard_storage_policies.sql` — **REQUIRED for Guard enrollment**: storage policies so a signed-in Guard user can upload/update/delete student photos. Without it, every enrollment fails with `new row violates row-level security policy`.
+   - `009_school_branding.sql` — school initials badge + kiosk voice toggle (`school_initials`, `voice_enabled`).
 
-   > ⚠️ **Skip `002_uniform_types.sql`** — it contained placeholder uniform data and is superseded by `004`.
+   > ⚠️ **Skip `002_uniform_types.sql`** — placeholder data, superseded by `004`. If your project was created from an older schema, run `006` even if `005` was already run.
+
+   > ✅ **Verify what the live database actually has:** paste `database/verify.sql` into the SQL Editor — one paste returns a PASS/FAIL row for every migration (columns, unique index, RLS + Storage policies). Then run `pnpm preflight` for a live anon-key audit of the seed data and demo students.
 4. Create a **Storage bucket** named `student-photos` (Public)
 5. Copy your **Project URL** + **anon key** from Project Settings → API
 
@@ -157,7 +167,7 @@ Student approaches gate
 ┌─── UNIFORM DETECTION ───────────────────┐
 │  YOLO11n checks body region via Web Worker│
 │  Detected class vs. expected uniform type │
-│  Fallback: color-based check             │
+│  Fail closed if YOLO unavailable        │
 └────────────────┬─────────────────────────┘
                  │
                  ▼
@@ -205,13 +215,16 @@ smart-gate/
 │   │   │   └── lib/
 │   │   │       ├── face.ts      # MediaPipe + ArcFace integration
 │   │   │       ├── uniform.ts   # YOLO11n uniform detection
-│   │   │       ├── arduino.ts   # Web Serial API gate control
+│   │   │       ├── gate.ts      # Unified gate layer (Wi-Fi first, USB fallback)
+│   │   │       ├── gateWs.ts    # ESP32 WebSocket transport (own hotspot)
+│   │   │       ├── arduino.ts   # Web Serial transport (Arduino fallback)
+│   │   │       ├── heartbeat.ts # Kiosk health heartbeat (every 60s)
 │   │   │       ├── db.ts        # IndexedDB offline storage
 │   │   │       ├── supabase.ts  # Cloud sync module
 │   │   │       ├── inference.worker.ts  # ONNX Runtime Web Worker
 │   │   │       ├── workerManager.ts     # Shared worker singleton
 │   │   │       └── __tests__/
-│   │   │           └── pure-functions.test.ts  # 28 unit tests
+│   │   │           └── pure-functions.test.ts  # 60 unit tests
 │   │   ├── public/
 │   │   │   ├── sw.js            # Service Worker for offline PWA
 │   │   │   ├── manifest.json    # PWA manifest
@@ -249,11 +262,16 @@ smart-gate/
 │   └── migrations/
 │       ├── 002_uniform_types.sql    # ⚠️ SUPERSEDED by 004 (placeholder data)
 │       ├── 003_add_sync_id.sql      # Log idempotency (crash-safe sync)
-│       └── 004_uniform_types_real.sql  # Real uniform classes (run this)
+│       ├── 004_uniform_types_real.sql  # Real uniform classes
+│       ├── 005_align_uniforms_to_model.sql # ⚠️ REQUIRED — aligns class ids to trained model
+│       ├── 006_compatibility_security.sql  # Older DB compatibility + secure writes
+│       └── 007_gate_health.sql             # Gate feedback + kiosk health table
 │
 ├── hardware/
-│   └── arduino/
-│       └── smart_gate.ino       # Arduino firmware (state machine)
+│   ├── arduino/
+│   │   └── smart_gate.ino       # Arduino firmware (USB fallback, state machine)
+│   └── esp32/
+│       └── smart_gate_esp32.ino # ESP32 Wi-Fi firmware (own hotspot + WebSocket)
 │
 ├── docs/
 │   ├── CAPSTONE_REPORT.html     # Comprehensive technical report
@@ -278,7 +296,13 @@ The core of the system — runs on a tablet mounted at the gate entrance. Fully 
 - Detects faces via **MediaPipe Tasks Vision** (WASM)
 - Recognizes faces via **ArcFace ONNX** (99.4% LFW, WebGPU accelerated)
 - Checks uniforms via **YOLO11n ONNX** (custom-trained, runs in Web Worker)
-- Controls gate via **Web Serial API** (Arduino USB-OTG)
+- **Tap-to-Start splash** — one tap unlocks camera permission + audio (guarantees voice works after every reboot)
+- Controls gate via **ESP32 over Wi-Fi** (own hotspot, no internet needed) with automatic **USB/Arduino fallback**
+- **Gate feedback loop** — confirms the gate physically opened (`S:OPEN`) before showing "Gate OPEN", and records it in the access log
+- **Voice announcements** — offline chimes + "Welcome to ISUFST" via browser speech synthesis; denial + override audio; soft throttled beep for unknown faces
+- **Privacy-safe public screen** — airport-style: no names, IDs, or confidence shown at the gate; full details live in Dashboard/Guard
+- **Operator Panel** — all diagnostics (FPS, sync, models, gate state) and controls (Force Sync, Bind Gate, voice toggle, reboot) behind a discreet gear icon
+- **Health heartbeat** — reports camera/gate/sync status to Supabase every 60s for the Dashboard's Kiosk Health page
 - Logs all access attempts to **IndexedDB** — syncs to Supabase when online
 - Single-page app with no routing — optimized for tablet kiosk use
 
@@ -300,14 +324,18 @@ Simple login portal for administrators:
 
 | Component | Purpose | Connection |
 |-----------|---------|-----------|
-| **Arduino Uno** | Gate controller | USB-OTG to tablet |
-| **Servo Motor** (pin 9) | Opens/closes gate | PWM control |
-| **Physical Button** (pin 2) | Manual override | Pull-down resistor |
+| **ESP32 DevKit V1** (recommended) | Gate controller over Wi-Fi | Tablet joins its own `SmartGate-Gate1` hotspot → WebSocket `ws://192.168.4.1:81` |
+| **Arduino Uno** (fallback) | Gate controller over USB | USB-OTG to tablet (Web Serial) |
+| **Servo Motor** | Opens/closes gate | PWM (ESP32 GPIO 13 / Uno pin 9) |
+| **Physical Button** | Manual override | ESP32 GPIO 4 → GND (pull-up) / Uno pin 2 (pull-down) |
 | **LED** (built-in) | Status indicator | Blink patterns |
+| **Phone charger + USB cable** | Powers the ESP32 | Any 5V charger |
 
-**Protocol:** Serial (9600 baud) — commands: `O` = open, `C` = close, `S` = status query
+**Protocol (both transports):** `O` = open, `C` = close, `S` = status query; events `R` = ready, `K` = ack, `B` = button press, `S:IDLE`/`S:OPEN`/... = gate state reports.
 
-**Firmware:** `hardware/arduino/smart_gate.ino` — state machine with debounced button, auto-close timer (5s), and auto-reconnect support.
+**Firmware:**
+- `hardware/esp32/smart_gate_esp32.ino` — **primary**: creates its own Wi-Fi hotspot, WebSocket server, broadcasts gate state on every change (feedback loop), auto-close timer (5s).
+- `hardware/arduino/smart_gate.ino` — **fallback**: state machine with debounced button, auto-close timer, Web Serial.
 
 ## Deployment
 
@@ -325,7 +353,7 @@ Set the following environment variables in each Vercel project:
 
 ### CI/CD Pipelines
 
-- **CI** (`ci.yml`): Runs on every push/PR — Prettier → TypeScript (all 3) → Build (all 3) → Tests (28 unit tests)
+- **CI** (`ci.yml`): Runs on every push/PR — Prettier → TypeScript (all 3) → Build (all 3) → Tests (60 unit tests)
 - **Deploy** (`deploy.yml`): Gated by checks — manual dispatch with per-service selection
 - **CodeQL** (`codeql.yml`): Weekly security vulnerability scan
 - **Dependabot**: Weekly automated dependency PRs
@@ -373,7 +401,7 @@ See **[docs/uniform-training.html](docs/uniform-training.html)** for the complet
 - **3-Photo Enrollment** — Front, left 45°, right 45° for best recognition accuracy (ArcFace)
 - **WebGPU Acceleration** — GPU inference when available, falls back to WebGL → WASM
 - **Crash-Safe Sync** — Idempotency keys prevent duplicate logs; 30s timeout guards against sync deadlocks
-- **Graceful Degradation** — YOLO model not loaded? Falls back to color check. Arduino disconnected? Shows warning.
+- **Fail-closed security** — if YOLO uniform validation is unavailable, access is denied rather than bypassing the uniform policy. Arduino disconnected? The kiosk remains usable in simulation mode and shows a warning.
 - **Audit Trail** — Every access attempt logged, synced to cloud when online
 
 ## Development
@@ -390,6 +418,9 @@ pnpm build
 
 # Run tests (kiosk)
 cd services/kiosk && npx vitest run
+
+# Audit the live database (migrations, seed data, demo students)
+pnpm preflight
 ```
 
 ## License

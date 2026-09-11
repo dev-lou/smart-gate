@@ -7,6 +7,66 @@
 
 import { describe, it, expect } from "vitest";
 
+// ─── Uniform course-family matching (mirrors lib/uniform.ts) ──
+
+const COURSE_FAMILIES: Array<[string, string]> = [
+  ["cbmsd", "cbmsd"],
+  ["cici", "cici"],
+  ["coag", "coag"],
+  ["education", "education"],
+];
+
+function familyOf(uniformName: string): string {
+  const n = (uniformName || "").toLowerCase();
+  for (const [marker, family] of COURSE_FAMILIES) {
+    if (n.includes(marker)) return family;
+  }
+  return "";
+}
+
+function wouldGrantAccess(expectedUniform: string, detectedUniform: string): boolean {
+  const expectedFamily = familyOf(expectedUniform);
+  const detectedFamily = familyOf(detectedUniform);
+  return expectedFamily !== "" && expectedFamily === detectedFamily;
+}
+
+describe("course-level uniform matching", () => {
+  it("accepts ANY cici variant for a CICI student (blazer/female/male)", () => {
+    expect(wouldGrantAccess("CICI", "cici_blazer_uniform")).toBe(true);
+    expect(wouldGrantAccess("CICI", "cici_female_uniform")).toBe(true);
+    expect(wouldGrantAccess("CICI", "cici_male_uniform")).toBe(true);
+    // legacy per-type stored values still match their own family
+    expect(wouldGrantAccess("cici_blazer_uniform", "cici_female_uniform")).toBe(true);
+  });
+
+  it("accepts any education / coag / cbmsd variant for their own course", () => {
+    expect(wouldGrantAccess("Education", "education_female_uniform")).toBe(true);
+    expect(wouldGrantAccess("Education", "education_male_uniform")).toBe(true);
+    expect(wouldGrantAccess("COAG", "coag_female_uniform")).toBe(true);
+    expect(wouldGrantAccess("COAG", "coag_male_uniform")).toBe(true);
+    expect(wouldGrantAccess("CBMSD", "cbmsd_chef_male_uniform")).toBe(true);
+    expect(wouldGrantAccess("CBMSD", "cbmsd_universal_male_uniform")).toBe(true);
+  });
+
+  it("DENIES a CICI student wearing a COAG/Education/CBMSD uniform", () => {
+    expect(wouldGrantAccess("CICI", "coag_female_uniform")).toBe(false);
+    expect(wouldGrantAccess("CICI", "education_male_uniform")).toBe(false);
+    expect(wouldGrantAccess("CICI", "cbmsd_chef_male_uniform")).toBe(false);
+  });
+
+  it("DENIES cross-course swaps in every direction", () => {
+    expect(wouldGrantAccess("COAG", "cici_blazer_uniform")).toBe(false);
+    expect(wouldGrantAccess("Education", "coag_male_uniform")).toBe(false);
+    expect(wouldGrantAccess("CBMSD", "cici_male_uniform")).toBe(false);
+  });
+
+  it("fails closed for unmapped types (no course / unknown)", () => {
+    expect(wouldGrantAccess("default", "cici_blazer_uniform")).toBe(false);
+    expect(wouldGrantAccess("", "cici_blazer_uniform")).toBe(false);
+    expect(wouldGrantAccess("CICI", "unknown_style")).toBe(false);
+  });
+});
+
 // ─── Cosine Similarity ─────────────────────────────────────
 
 function cosineSimilarity(a: Float32Array, b: Float32Array): number {
@@ -402,5 +462,233 @@ describe("ArcFace model specs", () => {
     expect((0 - 127.5) / 127.5).toBeCloseTo(-1, 5);
     expect((255 - 127.5) / 127.5).toBeCloseTo(1, 5);
     expect((127.5 - 127.5) / 127.5).toBeCloseTo(0, 5);
+  });
+});
+
+// ─── Gate WebSocket Message Parsing ─────────────────────────
+
+import { parseGateMessage, reconnectDelayMs } from "../gateWs";
+
+describe("reconnectDelayMs", () => {
+  it("starts at 5s and doubles each attempt", () => {
+    expect(reconnectDelayMs(1)).toBe(5000);
+    expect(reconnectDelayMs(2)).toBe(10000);
+    expect(reconnectDelayMs(3)).toBe(20000);
+  });
+
+  it("caps at 30s so the kiosk never hammers the ESP32", () => {
+    expect(reconnectDelayMs(4)).toBe(30000);
+    expect(reconnectDelayMs(10)).toBe(30000);
+    expect(reconnectDelayMs(100)).toBe(30000);
+  });
+});
+
+describe("parseGateMessage", () => {
+  it("parses button press event (B)", () => {
+    const event = parseGateMessage("B");
+    expect(event?.type).toBe("button_press");
+  });
+
+  it("parses ready signal (R) as connected", () => {
+    const event = parseGateMessage("R");
+    expect(event?.type).toBe("connected");
+  });
+
+  it("parses gate state reports (S:OPEN)", () => {
+    const event = parseGateMessage("S:OPEN");
+    expect(event?.type).toBe("gate_state");
+    expect(event?.data).toBe("OPEN");
+  });
+
+  it("parses all gate states", () => {
+    for (const state of ["IDLE", "OPENING", "OPEN", "CLOSING", "ERROR"]) {
+      const event = parseGateMessage(`S:${state}`);
+      expect(event?.type).toBe("gate_state");
+      expect(event?.data).toBe(state);
+    }
+  });
+
+  it("trims surrounding whitespace", () => {
+    const event = parseGateMessage("  S:IDLE  \n");
+    expect(event?.type).toBe("gate_state");
+    expect(event?.data).toBe("IDLE");
+  });
+
+  it("returns null for command acknowledgements (K)", () => {
+    expect(parseGateMessage("K")).toBeNull();
+  });
+
+  it("returns null for unknown or empty messages", () => {
+    expect(parseGateMessage("")).toBeNull();
+    expect(parseGateMessage("garbage")).toBeNull();
+  });
+});
+
+// ─── Heartbeat Payload Builder ──────────────────────────────
+
+import { buildHeartbeatRow } from "../heartbeat";
+
+describe("buildHeartbeatRow", () => {
+  const input = {
+    kioskName: "Gate 1",
+    cameraOk: true,
+    gateConnected: true,
+    gateState: "OPEN",
+    studentsCount: 42,
+    unsyncedLogs: 3,
+    lastSync: "2026-09-09T00:00:00.000Z",
+    fps: 24,
+    lastError: null,
+  };
+
+  it("maps camelCase input to the Supabase snake_case schema", () => {
+    const row = buildHeartbeatRow(input, "kiosk_test");
+    expect(row).toMatchObject({
+      kiosk_id: "kiosk_test",
+      kiosk_name: "Gate 1",
+      camera_ok: true,
+      gate_connected: true,
+      gate_state: "OPEN",
+      students_count: 42,
+      unsynced_logs: 3,
+      last_sync: "2026-09-09T00:00:00.000Z",
+      fps: 24,
+      last_error: null,
+    });
+  });
+
+  it("sets a valid ISO updated_at timestamp", () => {
+    const row = buildHeartbeatRow(input, "kiosk_test");
+    expect(new Date(row.updated_at).getTime()).not.toBeNaN();
+  });
+
+  it("round-trips offline-style payloads (null fields)", () => {
+    const row = buildHeartbeatRow(
+      {
+        kioskName: "Gate 2",
+        cameraOk: false,
+        gateConnected: false,
+        gateState: null,
+        studentsCount: 0,
+        unsyncedLogs: 0,
+        lastSync: null,
+        fps: 0,
+        lastError: "Camera unavailable",
+      },
+      "kiosk_2",
+    );
+    expect(row.gate_state).toBeNull();
+    expect(row.last_sync).toBeNull();
+    expect(row.last_error).toBe("Camera unavailable");
+  });
+});
+
+// ─── Heartbeat missing-table detection ──────────────────────
+
+import { isHeartbeatTableMissing } from "../heartbeat";
+
+describe("isHeartbeatTableMissing", () => {
+  it("detects the Supabase PGRST205 schema-cache error", () => {
+    const err = {
+      code: "PGRST205",
+      message: "Could not find the table 'public.kiosk_heartbeats' in the schema cache",
+    };
+    expect(isHeartbeatTableMissing(err)).toBe(true);
+  });
+
+  it("detects a plain 404 (table not deployed yet)", () => {
+    expect(isHeartbeatTableMissing({ status: 404, message: "Not Found" })).toBe(true);
+  });
+
+  it("detects a 'Could not find the table' message without a code", () => {
+    expect(
+      isHeartbeatTableMissing({
+        message: "Could not find the table 'public.x' in the schema cache",
+      }),
+    ).toBe(true);
+  });
+
+  it("keeps real errors classified as not-missing-table", () => {
+    expect(isHeartbeatTableMissing(new Error("network down"))).toBe(false);
+    expect(isHeartbeatTableMissing({ code: "PGRST301", message: "permission denied" })).toBe(false);
+    expect(isHeartbeatTableMissing({ status: 500 })).toBe(false);
+    expect(isHeartbeatTableMissing(null)).toBe(false);
+    expect(isHeartbeatTableMissing("boom")).toBe(false);
+  });
+});
+
+// ─── Unknown-Face Beep Throttle ─────────────────────────────
+
+import { shouldPlayBeep } from "../voice";
+
+describe("shouldPlayBeep", () => {
+  it("plays on the first unknown face (no previous beep)", () => {
+    const result = shouldPlayBeep(0, 1_000);
+    expect(result.play).toBe(true);
+    expect(result.lastPlayedAt).toBe(1_000);
+  });
+
+  it("does not play again within the 10s window", () => {
+    const first = shouldPlayBeep(0, 1_000);
+    const second = shouldPlayBeep(first.lastPlayedAt, 5_000);
+    expect(second.play).toBe(false);
+    expect(second.lastPlayedAt).toBe(1_000); // unchanged
+  });
+
+  it("plays again after the window passes", () => {
+    const first = shouldPlayBeep(0, 1_000);
+    const second = shouldPlayBeep(first.lastPlayedAt, 11_000);
+    expect(second.play).toBe(true);
+    expect(second.lastPlayedAt).toBe(11_000);
+  });
+
+  it("supports custom windows", () => {
+    const first = shouldPlayBeep(0, 1_000, 2_000);
+    const second = shouldPlayBeep(first.lastPlayedAt, 2_500, 2_000);
+    expect(second.play).toBe(false);
+    const third = shouldPlayBeep(first.lastPlayedAt, 3_100, 2_000);
+    expect(third.play).toBe(true);
+  });
+});
+
+// ─── Console Filter (benign WASM logs) ────────────────────
+
+import { isBenignWasmLog } from "../consoleFilter";
+
+describe("isBenignWasmLog", () => {
+  it("filters the exact XNNPACK INFO line", () => {
+    expect(isBenignWasmLog(["INFO: Created TensorFlow Lite XNNPACK delegate for CPU."])).toBe(true);
+  });
+
+  it("filters other TFLite delegate/runtime INFO lines", () => {
+    expect(isBenignWasmLog(["INFO: Created TensorFlow Lite WebGPU delegate."])).toBe(true);
+    expect(isBenignWasmLog(["INFO: Initialized TensorFlow Lite runtime."])).toBe(true);
+  });
+
+  it("keeps real errors visible", () => {
+    expect(isBenignWasmLog(["Face detection error:", new Error("boom")])).toBe(false);
+    expect(isBenignWasmLog(["Failed to load face detector:", "network down"])).toBe(false);
+    expect(
+      isBenignWasmLog(["INFO: Created TensorFlow Lite XNNPACK delegate for CPU.", "detect failed"]),
+    ).toBe(false);
+  });
+
+  it("ignores non-string payloads (unknown shapes pass through)", () => {
+    expect(isBenignWasmLog([{ weird: true }])).toBe(false);
+    expect(isBenignWasmLog([])).toBe(false);
+  });
+
+  it("filters the gate WebSocket failure line (ESP32 powered off)", () => {
+    expect(isBenignWasmLog(["WebSocket connection to 'ws://192.168.4.1:81/' failed: "])).toBe(true);
+  });
+
+  it("filters the gate disconnect notice", () => {
+    expect(isBenignWasmLog(["[Kiosk] Gate disconnected, auto-reconnect will attempt..."])).toBe(
+      true,
+    );
+  });
+
+  it("keeps real WebSocket failures visible (non-gate endpoints)", () => {
+    expect(isBenignWasmLog(["WebSocket error: connection refused"])).toBe(false);
   });
 });

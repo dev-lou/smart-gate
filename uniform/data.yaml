@@ -1,0 +1,13 @@
+train: c:/Users/Lou/Desktop/ll/uniform/train/images
+val: c:/Users/Lou/Desktop/ll/uniform/valid/images
+test: c:/Users/Lou/Desktop/ll/uniform/test/images
+
+nc: 9
+names: ['cbmsd_chef_male_uniform', 'cbmsd_universal_male_uniform', 'cici_blazer_uniform', 'cici_female_uniform', 'cici_male_uniform', 'coag_female_uniform', 'coag_male_uniform', 'education_female_uniform', 'education_male_uniform']
+
+roboflow:
+  workspace: lou-vincent-j-baroro-s-workspace
+  project: smart-gate-uniforms2
+  version: 5
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/lou-vincent-j-baroro-s-workspace/smart-gate-uniforms2/dataset/5

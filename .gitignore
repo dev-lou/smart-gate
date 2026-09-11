@@ -11,6 +11,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-store/
+.turbo/
 
 # ============================================================
 # Environment / Secrets
@@ -22,7 +23,7 @@ yarn-error.log*
 *.key
 
 # ============================================================
-# IDE / Editor
+# IDE / Editor / Agent tooling
 # ============================================================
 .vscode/
 .idea/
@@ -32,6 +33,7 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 .opencode/
+.freebuff/
 
 # ============================================================
 # Logs
@@ -39,7 +41,13 @@ Thumbs.db
 *.log
 
 # ============================================================
-# YOLO / ML Models (too large for repo — download at runtime)
+# YOLO / ML Models
+#
+# The kiosk model IS committed on purpose. The browser fetches
+# /models/uniform_yolo11n.onnx at runtime, so if it is missing from the repo
+# the deployed kiosk silently loses dress-code detection — it still matches
+# faces, it just fails every uniform check with no obvious cause.
+# The base weights (*.pt) stay out: they are 5.6 MB and only needed to retrain.
 # ============================================================
 *.pt
 *.onnx
@@ -47,8 +55,17 @@ Thumbs.db
 *.engine
 *.zip
 Uniform_left/
+
+runs/
 !services/kiosk/training/dataset/
 !services/kiosk/training/runs/
+
+# Training dataset — 43 MB of Roboflow images, needed only to RETRAIN, never to
+# run or deploy. Re-download from the url in uniform/data.yaml. Delete these
+# four lines if you want the raw images in the repo.
+uniform/train/
+uniform/valid/
+uniform/test/
 
 # ============================================================
 # Misc

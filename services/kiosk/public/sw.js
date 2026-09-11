@@ -13,9 +13,23 @@
  */
 
 const CACHE_PREFIX = "smart-gate-kiosk";
+const CACHE_VERSION = "v3";
+const APP_CACHE = `${CACHE_PREFIX}-${CACHE_VERSION}-app`;
+const ASSET_CACHE = `${CACHE_PREFIX}-${CACHE_VERSION}-assets`;
+const MODEL_CACHE = `${CACHE_PREFIX}-${CACHE_VERSION}-models`;
+const CACHE_NAMES = [APP_CACHE, ASSET_CACHE, MODEL_CACHE];
 
-// 🛡️ Static assets to cache on install
-const STATIC_ASSETS = ["/", "/manifest.json", "/icon-192.png", "/icon-512.png"];
+// Cache the local model during the first online install so the kiosk can
+// start uniform detection after the tablet goes offline.
+const STATIC_ASSETS = [
+  "/",
+  "/manifest.json",
+  "/icon-192.png",
+  "/icon-512.png",
+  "/icon-192.svg",
+  "/icon-512.svg",
+  "/models/uniform_yolo11n.onnx",
+];
 
 // 🛡️ AI model URLs to cache for offline face recognition + detection
 // These are fetched in the `fetch` handler and cached on first access
@@ -25,7 +39,7 @@ const MODEL_URLS = [
   // MediaPipe face detector (Google Storage)
   "storage.googleapis.com/mediapipe-models",
   // ONNX Runtime Web WASM + JS
-  "cdn.jsdelivr.net/npm/onnxruntime-web",
+  "cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0",
   // MediaPipe Tasks Vision WASM
   "cdn.jsdelivr.net/npm/@mediapipe/tasks-vision",
 ];
@@ -33,10 +47,8 @@ const MODEL_URLS = [
 // ─── Install ────────────────────────────────────────────────
 
 self.addEventListener("install", (event) => {
-  const cacheName = `${CACHE_PREFIX}-${Date.now()}`;
-
   event.waitUntil(
-    caches.open(cacheName).then((cache) => {
+    caches.open(APP_CACHE).then((cache) => {
       return cache.addAll(STATIC_ASSETS);
     }),
   );
@@ -54,10 +66,7 @@ self.addEventListener("activate", (event) => {
       .then((cacheNames) => {
         return Promise.all(
           cacheNames
-            .filter((name) => name.startsWith(CACHE_PREFIX))
-            // Keep only the MOST RECENT cache (delete others)
-            .sort()
-            .slice(0, -1)
+            .filter((name) => name.startsWith(CACHE_PREFIX) && !CACHE_NAMES.includes(name))
             .map((name) => caches.delete(name)),
         );
       })
@@ -84,7 +93,7 @@ self.addEventListener("fetch", (event) => {
         return fetch(event.request).then((response) => {
           if (response.status === 200) {
             const clone = response.clone();
-            caches.open(`${CACHE_PREFIX}-models`).then((cache) => {
+            caches.open(MODEL_CACHE).then((cache) => {
               cache.put(event.request, clone);
             });
           }
@@ -101,7 +110,7 @@ self.addEventListener("fetch", (event) => {
       fetch(event.request).catch(async () => {
         const cacheNames = await caches.keys();
         for (const name of cacheNames) {
-          if (name.startsWith(CACHE_PREFIX)) {
+          if (CACHE_NAMES.includes(name)) {
             const cache = await caches.open(name);
             const match = await cache.match("/");
             if (match) return match;
@@ -119,14 +128,16 @@ self.addEventListener("fetch", (event) => {
       .then((response) => {
         if (response.status === 200) {
           // 🛡️ Cache CDN assets for offline use
+          // supabase.co = student photos (embedding generation needs them offline)
           if (
             url.startsWith(self.location.origin) ||
             url.includes("storage.googleapis.com") ||
             url.includes("cdn.jsdelivr.net") ||
-            url.includes("huggingface.co")
+            url.includes("huggingface.co") ||
+            url.includes("supabase.co")
           ) {
             const clone = response.clone();
-            caches.open(`${CACHE_PREFIX}-assets`).then((cache) => {
+            caches.open(ASSET_CACHE).then((cache) => {
               cache.put(event.request, clone);
             });
           }
@@ -136,7 +147,7 @@ self.addEventListener("fetch", (event) => {
       .catch(async () => {
         const cacheNames = await caches.keys();
         for (const name of cacheNames) {
-          if (name.startsWith(CACHE_PREFIX)) {
+          if (CACHE_NAMES.includes(name)) {
             const cache = await caches.open(name);
             const match = await cache.match(event.request);
             if (match) return match;

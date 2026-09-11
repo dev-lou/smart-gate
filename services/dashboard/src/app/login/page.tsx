@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
 import { AlertTriangle, Lock } from "lucide-react";
@@ -10,7 +10,27 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [schoolName, setSchoolName] = useState(
+    "Iloilo State University of Fisheries Science and Technology",
+  );
   const router = useRouter();
+
+  // Branding from system_settings (public read — same source the kiosk syncs)
+  useEffect(() => {
+    const supabase = getSupabase();
+    if (!supabase) return;
+    (async () => {
+      try {
+        const { data } = await supabase.from("system_settings").select("key, value");
+        if (!data) return;
+        const map: Record<string, string> = {};
+        for (const row of data) map[row.key] = row.value;
+        if (map.school_name && map.school_name !== "Smart Academy") setSchoolName(map.school_name);
+      } catch {
+        /* keep fallback */
+      }
+    })();
+  }, []);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -73,7 +93,10 @@ export default function LoginPage() {
             <Lock className="w-8 h-8 text-primary-500" />
           </div>
           <h1 className="text-2xl font-bold text-surface-900">Smart Gate</h1>
-          <p className="text-surface-500 text-sm font-medium mt-1">Admin Dashboard</p>
+          <p className="text-surface-500 text-sm font-medium mt-1">{schoolName}</p>
+          <p className="text-[11px] text-surface-400 font-semibold uppercase tracking-widest mt-0.5">
+            Admin Dashboard
+          </p>
         </div>
 
         <form onSubmit={handleLogin} className="glass-card p-6 space-y-4">
@@ -101,7 +124,9 @@ export default function LoginPage() {
           </div>
 
           {error && (
-            <p className="text-red-700 font-medium text-sm bg-red-50 px-3 py-2 rounded-lg border border-red-100">{error}</p>
+            <p className="text-red-700 font-medium text-sm bg-red-50 px-3 py-2 rounded-lg border border-red-100">
+              {error}
+            </p>
           )}
 
           <button

@@ -45,6 +45,8 @@ export interface StoredLog {
   confidence: number | null;
   uniform_ok: boolean | null;
   failure_reason: string | null;
+  /** Gate feedback: "open" | "unconfirmed" | null (no gate link) */
+  gate_state?: string | null;
   device_timestamp: string;
   /** 🛡️ Idempotency key — prevents duplicate logs on re-sync */
   sync_id: string;
@@ -283,14 +285,21 @@ export async function getAllSettings(): Promise<StoredSetting[]> {
  */
 export async function getSyncSettings(): Promise<{
   schoolName: string;
+  schoolInitials: string;
   matchThreshold: number;
   uniformEnabled: boolean;
 }> {
-  const schoolName = (await getSetting("school_name")) ?? "Smart Academy";
+  const rawName = (await getSetting("school_name")) ?? "";
+  // Guard against the old placeholder seed value
+  const schoolName =
+    rawName && rawName !== "Smart Academy"
+      ? rawName
+      : "Iloilo State University of Fisheries Science and Technology";
+  const schoolInitials = (await getSetting("school_initials")) ?? "ISUFST";
   const threshold = parseFloat((await getSetting("face_recognition_threshold")) ?? "0.6");
   const uniformEnabled = (await getSetting("uniform_detection_enabled")) !== "false";
 
-  return { schoolName, matchThreshold: threshold, uniformEnabled };
+  return { schoolName, schoolInitials, matchThreshold: threshold, uniformEnabled };
 }
 
 // ─── Database Stats ─────────────────────────────────────────

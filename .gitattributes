@@ -1,0 +1,18 @@
+# Normalize line endings — Prettier is configured with "endOfLine": "lf",
+# so the working tree must not be rewritten to CRLF on Windows.
+# Without this, `prettier --check` fails locally while CI passes.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets — never touch
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.onnx binary
+*.pt binary
+*.woff binary
+*.woff2 binary

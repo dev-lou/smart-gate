@@ -346,7 +346,7 @@ Push/PR to main/develop
 │     └─ pnpm --filter kiosk build                 │
 │                                                   │
 │  4. Unit Tests                                    │
-│     └─ vitest run (28 tests)                     │
+│     └─ vitest run (60 tests)                     │
 │                                                   │
 │  5. CI Summary (PR comment table)                │
 └───────────────────────────────────────────────────┘

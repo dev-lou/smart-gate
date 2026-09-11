@@ -13,11 +13,13 @@
     "build:guard": "pnpm --filter @smart-gate/guard build",
     "build:kiosk": "pnpm --filter @smart-gate/kiosk build",
     "build": "pnpm build:dashboard && pnpm build:guard && pnpm build:kiosk",
-    "lint": "pnpm --recursive lint",
+    "lint": "prettier --check \"services/**/*.{ts,tsx,js,json,css}\" \"scripts/**/*.mjs\"",
     "typecheck": "pnpm --recursive typecheck",
+    "test": "pnpm --filter @smart-gate/kiosk test",
+    "preflight": "node scripts/preflight.mjs",
     "setup": "pnpm install",
     "clean": "rm -rf node_modules packages/*/node_modules services/*/node_modules services/*/.next",
-    "format": "prettier --write \"services/**/*.{ts,tsx,js,json,css}\""
+    "format": "prettier --write \"services/**/*.{ts,tsx,js,json,css}\" \"scripts/**/*.mjs\""
   },
   "engines": {
     "node": ">=20.0.0",

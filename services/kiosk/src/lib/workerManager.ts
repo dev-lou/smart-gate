@@ -14,7 +14,7 @@
 
 // ─── Types ──────────────────────────────────────────────────
 
-type WorkerCallback = (data: unknown) => void;
+type WorkerCallback = (data: unknown, error?: Error) => void;
 
 // ─── State ──────────────────────────────────────────────────
 
@@ -40,7 +40,11 @@ function getWorker(): Worker {
 
     const callback = callbacks.get(id);
     if (callback) {
-      callback(data);
+      const workerError =
+        typeof type === "string" && type.endsWith("_error")
+          ? new Error(`[Worker] ${type}: ${String(data)}`)
+          : undefined;
+      callback(data, workerError);
       callbacks.delete(id);
 
       // Clear timeout
@@ -80,8 +84,10 @@ export function sendToWorker(
     const id = `req_${++requestCounter}_${Date.now()}`;
     const worker = getWorker();
 
-    callbacks.set(id, (result) => {
-      if (result === null || result === undefined) {
+    callbacks.set(id, (result, error) => {
+      if (error) {
+        reject(error);
+      } else if (result === null || result === undefined) {
         reject(new Error(`Worker returned null/undefined for ${type}`));
       } else {
         resolve(result);

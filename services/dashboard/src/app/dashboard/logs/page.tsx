@@ -14,6 +14,7 @@ interface AccessLog {
   confidence: number | null;
   uniform_ok: boolean | null;
   failure_reason: string | null;
+  gate_state: string | null;
   device_timestamp: string;
   created_at: string;
 }
@@ -22,6 +23,8 @@ export default function LogsPage() {
   const router = useRouter();
   const [logs, setLogs] = useState<AccessLog[]>([]);
   const [loading, setLoading] = useState(true);
+  const [authReady, setAuthReady] = useState(false);
+  const [error, setError] = useState("");
   const [filter, setFilter] = useState<"all" | "granted" | "denied">("all");
   const [dateRange, setDateRange] = useState("24h");
 
@@ -32,19 +35,25 @@ export default function LogsPage() {
       return;
     }
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) router.push("/login");
+    supabase.auth.getSession().then(({ data: { session }, error: sessionError }) => {
+      if (sessionError) setError(sessionError.message);
+      if (!session) {
+        router.push("/login");
+        return;
+      }
+      setAuthReady(true);
     });
   }, [router]);
 
   useEffect(() => {
-    loadLogs();
-  }, [filter, dateRange]);
+    if (authReady) void loadLogs();
+  }, [authReady, filter, dateRange]);
 
   async function loadLogs() {
     const supabase = getSupabase();
     if (!supabase) return;
     setLoading(true);
+    setError("");
 
     const now = new Date();
     let since: Date;
@@ -75,8 +84,13 @@ export default function LogsPage() {
     if (filter === "granted") query = query.eq("success", true);
     else if (filter === "denied") query = query.eq("success", false);
 
-    const { data } = await query;
-    if (data) setLogs(data);
+    const { data, error: queryError } = await query;
+    if (queryError) {
+      setError(queryError.message);
+      setLogs([]);
+    } else {
+      setLogs(data ?? []);
+    }
     setLoading(false);
   }
 
@@ -93,16 +107,15 @@ export default function LogsPage() {
   }
 
   return (
-    <div className="min-h-screen p-6">
-      <div className="flex items-center justify-between mb-8">
-        <div className="flex items-center gap-3">
-          <div className="w-12 h-12 bg-white rounded-xl shadow-sm border border-surface-200 flex items-center justify-center">
-            <ClipboardList className="w-6 h-6 text-primary-600" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold text-surface-900">Access Logs</h1>
-            <p className="text-surface-500 font-medium text-sm mt-1">{logs.length} events in selected period</p>
-          </div>
+    <div>
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-8">
+        <div>
+          <h1 className="text-2xl lg:text-3xl font-black text-surface-900 tracking-tight">
+            Access Logs
+          </h1>
+          <p className="text-surface-500 font-medium text-sm mt-1">
+            {logs.length} events in selected period
+          </p>
         </div>
         <button onClick={loadLogs} className="btn-secondary text-sm flex items-center gap-2">
           <RefreshCw className="w-4 h-4" />
@@ -110,7 +123,12 @@ export default function LogsPage() {
         </button>
       </div>
 
-      {/* Filters */}
+      {error && (
+        <div className="mb-6 px-4 py-3 rounded-xl text-sm font-bold bg-red-50 border border-red-200 text-red-700">
+          {error}
+        </div>
+      )}
+
       <div className="flex items-center gap-4 mb-6">
         <div className="flex gap-2">
           {(["all", "granted", "denied"] as const).map((f) => (
@@ -168,6 +186,7 @@ export default function LogsPage() {
                   <th className="table-header">Status</th>
                   <th className="table-header">Confidence</th>
                   <th className="table-header">Uniform</th>
+                  <th className="table-header">Gate</th>
                   <th className="table-header">Reason</th>
                 </tr>
               </thead>
@@ -194,12 +213,14 @@ export default function LogsPage() {
                     <td className="table-cell">
                       <span
                         className={`px-2 py-1 rounded-md text-xs font-bold flex items-center gap-1 w-max ${
-                          log.success
-                            ? "bg-green-50 text-green-700"
-                            : "bg-red-50 text-red-700"
+                          log.success ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
                         }`}
                       >
-                        {log.success ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+                        {log.success ? (
+                          <CheckCircle2 className="w-3 h-3" />
+                        ) : (
+                          <XCircle className="w-3 h-3" />
+                        )}
                         {log.success ? "GRANTED" : "DENIED"}
                       </span>
                     </td>
@@ -208,8 +229,33 @@ export default function LogsPage() {
                     </td>
                     <td className="table-cell">
                       {log.uniform_ok !== null ? (
-                        <span className={`font-bold flex items-center gap-1 text-xs ${log.uniform_ok ? "text-green-600" : "text-red-600"}`}>
-                          {log.uniform_ok ? <><CheckCircle2 className="w-3 h-3"/> OK</> : <><XCircle className="w-3 h-3"/> FAIL</>}
+                        <span
+                          className={`font-bold flex items-center gap-1 text-xs ${log.uniform_ok ? "text-green-600" : "text-red-600"}`}
+                        >
+                          {log.uniform_ok ? (
+                            <>
+                              <CheckCircle2 className="w-3 h-3" /> OK
+                            </>
+                          ) : (
+                            <>
+                              <XCircle className="w-3 h-3" /> FAIL
+                            </>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="text-surface-400 font-medium">—</span>
+                      )}
+                    </td>
+                    <td className="table-cell">
+                      {log.gate_state ? (
+                        <span
+                          className={`px-2 py-1 rounded-md text-xs font-bold uppercase ${
+                            log.gate_state === "open"
+                              ? "bg-green-50 text-green-700"
+                              : "bg-amber-50 text-amber-700"
+                          }`}
+                        >
+                          {log.gate_state}
                         </span>
                       ) : (
                         <span className="text-surface-400 font-medium">—</span>

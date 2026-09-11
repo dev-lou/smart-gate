@@ -58,8 +58,15 @@ This installs all dependencies for all 3 services (kiosk, guard, dashboard) via 
 4. Do the same for all migrations in `database/migrations/` in order:
    - `003_add_sync_id.sql` — log idempotency for crash-safe sync
    - `004_uniform_types_real.sql` — real uniform classes (replaces `002`)
+   - `005_align_uniforms_to_model.sql` — **REQUIRED**: aligns class ids to the trained 9-class YOLO model (CBMSD/CICI/COAG/Education). Uniform detection will not match correctly without it.
+   - `006_compatibility_security.sql` — **REQUIRED for older/resumed projects**: adds missing access-log columns, idempotent sync, authenticated Guard/Dashboard writes, and Storage policies.
+   - `007_gate_health.sql` — **gate feedback + kiosk health**: adds `gate_state` to access logs and the `kiosk_heartbeats` table (powers the Dashboard Kiosk Health page).
+   - `008_guard_storage_policies.sql` — **REQUIRED**: Storage policies on `storage.objects` so a signed-in Guard user can upload/replace/delete student photos. Without it, Guard enrollment fails at the photo-upload step with `new row violates row-level security policy`.
+   - `009_school_branding.sql` — school initials badge + kiosk voice toggle (`school_initials`, `voice_enabled`).
 
-   > ⚠️ **Skip `002_uniform_types.sql`** — it contained placeholder uniform data and is superseded by `004_uniform_types_real.sql`.
+   > ✅ **Confirm everything landed:** paste `database/verify.sql` into the SQL Editor — it returns one PASS/FAIL row per migration (columns, the unique `sync_id` index, RLS + Storage policies), which is exactly what the anon key cannot see. Then run `pnpm preflight` for a live audit of seed data and demo students.
+
+   > ⚠️ **Skip `002_uniform_types.sql`** — it contained placeholder uniform data and is superseded by `004_uniform_types_real.sql`. If `005` was already run before it was updated, run `006` now.
 
 ### 2.3 Create Storage Bucket
 1. Go to **Storage** in the Supabase Dashboard
@@ -169,15 +176,42 @@ pnpm dev:kiosk      # → http://localhost:3002
 
 ---
 
-## Step 7: Connect Arduino Hardware
+## Step 7: Connect Gate Hardware
 
-### 7.1 Upload Firmware
-1. Open `hardware/arduino/smart_gate.ino` in Arduino IDE
-2. Select board: **Arduino Uno**
-3. Select port
+Two options — **ESP32 over Wi-Fi is recommended** (no cable, no internet needed).
+The Arduino over USB remains as an automatic fallback.
+
+### 7.1 Option A (recommended): ESP32 Wi-Fi
+
+**Buy:** one ESP32 DevKit V1 (WROOM-32) — everything else (servo, button, wires, phone charger) is reused from the Arduino setup.
+
+**Flash firmware** (Arduino IDE):
+1. Install the **"WebSockets"** library (Sketch → Include Library → Manage Libraries → search "WebSockets" by Markus Sattler)
+2. Open `hardware/esp32/smart_gate_esp32.ino`
+3. Select board: **ESP32 DevKit V1** (Tools → Board → ESP32 Arduino)
 4. Click **Upload**
 
-### 7.2 Wire the Circuit
+**Wire the circuit:**
+```
+ESP32 DevKit V1:
+  GPIO 13 → Servo Signal (orange)
+  GND     → Servo GND (brown) + Button GND (one leg)
+  5V/VIN  → Servo Power (red)
+  GPIO 4  → Button other leg (internal pull-up enabled in firmware)
+  USB     → any phone charger (powers the board)
+```
+
+**Connect to kiosk:**
+1. Power the ESP32 with a phone charger (LED blinks 3× = ready)
+2. On the tablet, join Wi-Fi network **`SmartGate-Gate1`** (password `smartgate123`)
+3. Open the kiosk app — it auto-connects to `ws://192.168.4.1:81`
+4. Status pill shows **Gate: IDLE** with a Wi-Fi icon
+5. No internet, no school Wi-Fi, no USB cable required — works fully offline
+
+### 7.2 Option B (fallback): Arduino Uno over USB
+1. Open `hardware/arduino/smart_gate.ino` in Arduino IDE
+2. Select board: **Arduino Uno**, select port, click **Upload**
+
 ```
 Arduino Uno:
   Pin 9  → Servo Signal (orange)
@@ -188,15 +222,18 @@ Button: Connect between Pin 2 and GND
         (internal pull-down enabled in firmware)
 ```
 
-### 7.3 Connect to Kiosk
 1. Plug Arduino into tablet via USB-OTG cable
-2. In the kiosk, tap **"Connect Arduino"** button
-3. A browser prompt appears — select the Arduino device
-4. Once connected, the status shows ✅ Arduino Connected
-5. Test: Press the physical button → gate opens in simulation
+2. In the kiosk, tap **"Connect Gate"** — a browser prompt appears, select the Arduino
+3. Status shows ✅ Gate linked (USB). If no ESP32 is reachable, the kiosk falls back to this automatically.
 
-### 7.4 Auto-Reconnect
-The kiosk automatically reconnects if the USB cable is bumped. It retries every 5 seconds for up to 60 seconds.
+### 7.3 Auto-Reconnect
+Both transports auto-reconnect: the kiosk retries every 5 seconds for up to 60 seconds, then shows "Gate disconnected — tap to reconnect".
+
+### 7.4 Verify the Feedback Loop
+1. With the gate connected, scan a valid face
+2. The kiosk sends `O`, then waits up to 3s for `S:OPEN`
+3. The screen shows **"Gate OPEN — please enter"** and the access log records `gate_state: open`
+4. If the gate never confirms, the log records `gate_state: unconfirmed` (flag for inspection in the Dashboard)
 
 ---
 

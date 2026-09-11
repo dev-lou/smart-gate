@@ -51,7 +51,13 @@ export interface ArduinoState {
 }
 
 export type ArduinoEventType =
-  "button_press" | "connected" | "disconnected" | "error" | "reconnecting" | "reconnect_failed";
+  | "button_press"
+  | "connected"
+  | "disconnected"
+  | "error"
+  | "reconnecting"
+  | "reconnect_failed"
+  | "gate_state";
 
 export interface ArduinoEvent {
   type: ArduinoEventType;
@@ -304,11 +310,15 @@ export async function queryStatus(): Promise<void> {
 }
 
 /**
- * Listen for incoming serial data (button presses, acknowledgements).
+ * Listen for incoming serial data (button presses, acknowledgements, status).
+ * Incoming lines: "B" / "R" / "K" / "S:IDLE" / "S:OPEN" ...
  */
 async function startListening(): Promise<void> {
   if (!reader || reading) return;
   reading = true;
+
+  // Buffer for line-based parsing (e.g. "S:OPEN" arrives as a full line)
+  let lineBuffer = "";
 
   try {
     while (reading) {
@@ -316,22 +326,12 @@ async function startListening(): Promise<void> {
       if (done) break;
 
       if (value) {
-        for (const char of value) {
-          switch (char) {
-            case "B":
-              emit({ type: "button_press", timestamp: Date.now() });
-              break;
-            case "R":
-              // Arduino ready signal
-              console.log("[Arduino] Ready signal received");
-              break;
-            case "K":
-              // Command acknowledged
-              break;
-            default:
-              // Unknown char — ignore
-              break;
-          }
+        lineBuffer += value;
+        let newlineIndex: number;
+        while ((newlineIndex = lineBuffer.indexOf("\n")) !== -1) {
+          const line = lineBuffer.slice(0, newlineIndex).trim();
+          lineBuffer = lineBuffer.slice(newlineIndex + 1);
+          handleIncomingLine(line);
         }
       }
     }
@@ -345,6 +345,28 @@ async function startListening(): Promise<void> {
     }
   } finally {
     reading = false;
+  }
+}
+
+/**
+ * Handle a single parsed serial line.
+ */
+function handleIncomingLine(line: string): void {
+  if (!line) return;
+
+  if (line === "B") {
+    emit({ type: "button_press", timestamp: Date.now() });
+  } else if (line === "R") {
+    // Arduino ready signal
+    console.log("[Arduino] Ready signal received");
+  } else if (line === "K") {
+    // Command acknowledged — no action needed
+  } else if (line.startsWith("S:")) {
+    // Gate state report (feedback loop): S:IDLE, S:OPEN, ...
+    const state = line.slice(2);
+    emit({ type: "gate_state", timestamp: Date.now(), data: state });
+  } else {
+    // Unknown line — ignore
   }
 }
 

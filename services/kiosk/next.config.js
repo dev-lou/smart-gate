@@ -3,6 +3,7 @@ const nextConfig = {
   // ✅ Standard Vercel deployment — no output config needed.
   // DO NOT add `output: "standalone"` — it breaks Vercel's serverless infrastructure.
   // The PWA service worker handles offline caching.
+  devIndicators: false,
 };
 
 module.exports = nextConfig;

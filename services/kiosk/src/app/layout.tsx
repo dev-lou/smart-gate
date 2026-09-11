@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import ErrorBoundary from "@/components/ErrorBoundary";
+import { ConsoleFilterClient } from "@/components/ConsoleFilterClient";
 
 // 🔴 FIX BUG #1: Wrap the kiosk in an ErrorBoundary to prevent white screen crashes
 
@@ -8,6 +9,9 @@ export const metadata: Metadata = {
   title: "Smart Gate — Access Control",
   description: "AI-powered gate kiosk with face recognition & uniform detection",
   manifest: "/manifest.json",
+  icons: {
+    icon: [{ url: "/icon-192.svg", type: "image/svg+xml" }],
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
@@ -35,11 +39,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
           rel="stylesheet"
         />
-        <link rel="apple-touch-icon" href="/icon-192.svg" />
+        <link rel="apple-touch-icon" href="/icon-192.png" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
       </head>
       <body className="font-sans antialiased">
-        <ErrorBoundary>{children}</ErrorBoundary>
+        <ErrorBoundary>
+          <ConsoleFilterClient />
+          {children}
+        </ErrorBoundary>
         <script
           dangerouslySetInnerHTML={{
             __html: `

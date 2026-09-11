@@ -201,7 +201,11 @@ export async function getFaceEmbedding(
  * 🔴 ACCURACY FIX #4: Student with multiple embeddings (front, left, right angles)
  * is compared from all angles — best score wins.
  */
-export function matchFace(embedding: Float32Array, enrolledFaces: EnrolledFace[]): MatchResult {
+export function matchFace(
+  embedding: Float32Array,
+  enrolledFaces: EnrolledFace[],
+  threshold: number = MATCH_THRESHOLD,
+): MatchResult {
   if (enrolledFaces.length === 0) {
     return { person: null, confidence: 0, matched: false };
   }
@@ -212,6 +216,7 @@ export function matchFace(embedding: Float32Array, enrolledFaces: EnrolledFace[]
   for (const enrolled of enrolledFaces) {
     // Compare against ALL embeddings for this student (multiple angles)
     for (const emb of enrolled.embeddings) {
+      if (embedding.length !== emb.length || embedding.length === 0) continue;
       const score = cosineSimilarity(embedding, emb);
       if (score > bestScore) {
         bestScore = score;
@@ -220,7 +225,7 @@ export function matchFace(embedding: Float32Array, enrolledFaces: EnrolledFace[]
     }
   }
 
-  const matched = bestScore >= MATCH_THRESHOLD;
+  const matched = bestScore >= threshold;
 
   return {
     person: matched ? bestPerson : null,

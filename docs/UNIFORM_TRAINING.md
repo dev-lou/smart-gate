@@ -52,18 +52,22 @@ Take **100+ photos per uniform type** with your phone or camera.
 
 ### Example Classes (your real ones)
 
+> ⚠️ **CURRENT MODEL (Sept 2026):** the deployed `uniform_yolo11n.onnx` is trained on these **9 classes** — keep this EXACT order when training/extending:
+
 ```
-education_female_uniform   → Education female uniform
-education_male_uniform     → Education male uniform
-chm_chef_uniform           → CHM chef uniform
-chm_fnb_uniform            → CHM food & beverage uniform
-chm_front_office_uniform   → CHM front office uniform
-chm_universal_uniform      → CHM universal uniform
+0  cbmsd_chef_male_uniform      → CBMSD chef male uniform
+1  cbmsd_universal_male_uniform → CBMSD universal male uniform
+2  cici_blazer_uniform          → CICI blazer uniform
+3  cici_female_uniform          → CICI female uniform
+4  cici_male_uniform            → CICI male uniform
+5  coag_female_uniform          → COAG female uniform
+6  coag_male_uniform            → COAG male uniform
+7  education_female_uniform     → Education female uniform
+8  education_male_uniform       → Education male uniform
 ```
 
-> The format is `<course>_<type>_uniform` — it matches your image files exactly (e.g. `agri_male_uniform_1.jpg` → class `agri_male_uniform`).
-> Follow the same format when you add BSIT/AGRI later (e.g. `bsit_male_uniform`, `agri_female_uniform`).
-> These names are already seeded in `database/migrations/004_uniform_types_real.sql`.
+> The format is `<course>_<type>_uniform` — it matches your image files exactly.
+> These names (with matching class_ids) are seeded in `database/migrations/005_align_uniforms_to_model.sql` — run it after `004`. Class id in the DB MUST match the model's class order.
 
 ---
 
@@ -91,7 +95,7 @@ chm_universal_uniform      → CHM universal uniform
 
 1. Click **Annotate** on any image
 2. Draw a **bounding box** around the uniform top area
-3. Select the correct class (e.g., `chm_chef_uniform`)
+3. Select the correct class (e.g., `cici_male_uniform`)
 4. Repeat for all images
 
 **Tips:**
@@ -236,8 +240,8 @@ You can test detection accuracy by:
 2. Pointing the camera at a person wearing the uniform
 3. Checking the console for detection results:
    ```
-   [Uniform] YOLO detected: chm_chef_uniform (confidence: 0.87)
-   [Uniform] Expected: chm_chef_uniform → Match!
+   [Uniform] YOLO detected: cici_male_uniform (confidence: 0.87)
+   [Uniform] Expected: cici_male_uniform → Match!
    ```
 
 ### Accuracy Expectations

@@ -39,7 +39,7 @@ const { error } = await supabase
     name: "Juan Dela Cruz",
     student_id: "2024-001",
     department: "BSIT",
-    uniform_type: "chm_chef_uniform",
+    uniform_type: "cici_male_uniform",
     photo_url: JSON.stringify(["url1.jpg", "url2.jpg", "url3.jpg"]),
     is_active: true,
   });
@@ -91,9 +91,16 @@ const { data } = supabase.storage
 
 ---
 
-## 2. Web Serial Protocol (Kiosk ↔ Arduino)
+## 2. Gate Control Protocol (Kiosk ↔ Gate Controller)
 
-The kiosk communicates with the Arduino gate controller via **Web Serial API** over USB (9600 baud).
+The kiosk talks to the gate controller over **two interchangeable transports** — same protocol, same semantics:
+
+| Transport | Hardware | Connection |
+|-----------|----------|------------|
+| **WebSocket (primary)** | ESP32 DevKit V1 | Tablet joins the ESP32's own hotspot (`SmartGate-Gate1`) and connects to `ws://192.168.4.1:81` — no cable, no internet, no broker. Override the address with `NEXT_PUBLIC_GATE_WS_URL`. |
+| **Web Serial (fallback)** | Arduino Uno | USB-OTG to tablet, 9600 baud (Chrome/Edge only) |
+
+The kiosk auto-selects: Wi-Fi first, USB fallback (`lib/gate.ts`).
 
 ### Commands (Browser → Arduino)
 
@@ -124,23 +131,39 @@ IDLE ───('O')──→ OPENING ───(servo 90°)──→ OPEN
                         IDLE
 ```
 
+### Feedback Loop
+
+The kiosk does **not** blindly trust the open command:
+
+1. Kiosk sends `O`, then queries status
+2. The controller broadcasts its state on every change (`S:IDLE` → `S:OPENING` → `S:OPEN`)
+3. Kiosk waits up to 3s for `S:OPEN` (`confirmGateOpen()`)
+4. UI shows **"Gate OPEN — please enter"**; the access log records `gate_state: open` (or `unconfirmed` on timeout)
+
 ### JavaScript API
 
 ```typescript
-// arduino.ts — browser-side
-import { connectToArduino, openGate, closeGate, onArduinoEvent } from "@/lib/arduino";
+// lib/gate.ts — unified gate layer (Wi-Fi first, USB fallback)
+import {
+  connectToGate, tryAutoConnect, openGate, closeGate,
+  confirmGateOpen, onGateEvent, getGateState,
+} from "@/lib/gate";
 
-// Connect (user clicks button → browser prompt)
-await connectToArduino();
+// Auto-connect on boot: ESP32 WebSocket, then Arduino Web Serial
+const conn = await tryAutoConnect(); // { connected, transport: "wifi" | "usb" | null }
 
-// Open gate
-await openGate();  // Sends 'O'
+// Open gate + confirm it physically opened (feedback loop)
+await openGate();                    // Sends 'O'
+const opened = await confirmGateOpen(3000); // true when S:OPEN received
 
 // Close gate
-await closeGate(); // Sends 'C'
+await closeGate();                   // Sends 'C'
 
-// Listen for button press
-onArduinoEvent((event) => {
+// Live gate state (IDLE / OPENING / OPEN / CLOSING / ERROR)
+const state = getGateState();
+
+// Listen for button press (physical override)
+onGateEvent((event) => {
   if (event.type === "button_press") {
     console.log("Manual override button pressed");
   }
@@ -199,7 +222,7 @@ initUniformDetector(): Promise<boolean>
   → Downloads YOLO11n ONNX → creates inference session
 
 checkUniform(video, faceBbox, expectedUniform, canvas): UniformCheckResult
-  → YOLO inference or color fallback → { ok, confidence, detail }
+  → YOLO inference (or fail-closed denial if no model is loaded) → { ok, confidence, detail }
 ```
 
 ### Database Module (`lib/db.ts`)
@@ -230,24 +253,32 @@ uploadLogs(): Promise<{ uploaded: number; errors: number }>
   → Uploads unsynced logs in batches of 50
 ```
 
-### Arduino Module (`lib/arduino.ts`)
+### Gate Modules
 
 ```typescript
-connectToArduino(): Promise<void>
-  → Opens Web Serial port (9600 baud)
+// lib/gate.ts — facade: transport selection + unified events
+import { tryAutoConnect, connectToGate, openGate, closeGate, confirmGateOpen, getGateState, onGateEvent, disconnectGate } from "@/lib/gate";
 
-tryAutoConnect(): Promise<boolean>
-  → Attempts to find already-paired Arduino
+// lib/gateWs.ts — ESP32 WebSocket transport
+import { connectWs, disconnectWs, openGateWs, closeGateWs, queryStatusWs, onWsEvent, parseGateMessage, getLastGateState } from "@/lib/gateWs";
 
-openGate(): Promise<void>
-  → Sends 'O' → servo rotates to 90°
-
-closeGate(): Promise<void>
-  → Sends 'C' → servo rotates to 0°
-
-isSerialSupported(): boolean
-  → Checks if browser supports Web Serial API
+// lib/arduino.ts — Arduino Web Serial transport (fallback)
+import { connectToArduino, tryAutoConnect, openGate, closeGate, onArduinoEvent, isSerialSupported } from "@/lib/arduino";
 ```
+
+### Heartbeat Module (`lib/heartbeat.ts`)
+
+```typescript
+startHeartbeat(provider: () => HeartbeatInput | Promise<HeartbeatInput>, intervalMs = 60_000)
+  → Sends one heartbeat immediately, then every 60s (upsert into kiosk_heartbeats)
+
+stopHeartbeat(): void
+  → Stops the loop
+
+// HeartbeatInput: { kioskName, cameraOk, gateConnected, gateState, studentsCount, unsyncedLogs, lastSync, fps, lastError }
+```
+
+**`kiosk_heartbeats` table (migration 007):** one row per kiosk (`kiosk_id` PK), updated every 60s. The Dashboard flags a kiosk **OFFLINE** when `updated_at` is older than 90s.
 
 ---
 
@@ -292,6 +323,7 @@ ObjectStore: "logs"
   Data: {
     person_id, person_name, direction, method,
     success, confidence, uniform_ok, synced,
+    gate_state ("open" | "unconfirmed" | null),
     sync_id (idempotency key), ...
   }
 

@@ -1,16 +1,18 @@
 # ─── Deploy: Production + Preview ───────────────────────────
-# Vercel handles preview deployments natively via Git integration.
-# This workflow handles production rollouts & manual deploys.
+# Uses the official Vercel CLI (no third-party deploy action).
+# Vercel's Git integration still creates per-branch previews; this
+# workflow handles production rollouts, tags, and manual deploys.
 #
 # Prerequisites:
-#   1. Create 3 Vercel projects, each pointing to:
-#      Root Directory → services/dashboard (or guard/kiosk)
-#      Framework → Preview → Next.js, Build → next build
-#   2. Add secrets to GitHub: VERCEL_TOKEN, VERCEL_ORG_ID,
+#   1. Create 3 Vercel projects, each with Root Directory =
+#      services/dashboard (or guard/kiosk).
+#   2. GitHub → Settings → Secrets and variables → Actions:
+#      VERCEL_TOKEN, VERCEL_ORG_ID,
 #      VERCEL_DASHBOARD_PROJECT_ID, VERCEL_GUARD_PROJECT_ID,
 #      VERCEL_KIOSK_PROJECT_ID, NEXT_PUBLIC_SUPABASE_URL,
 #      NEXT_PUBLIC_SUPABASE_ANON_KEY
-#   3. Vercel auto-deploys previews per branch (Git integration)
+#   3. Optional: create a protected "production" environment to
+#      require manual approval before a production deploy.
 
 name: Deploy
 
@@ -39,15 +41,29 @@ on:
           - production
           - preview
 
+# Least privilege — deploys read the repo and use Vercel token secrets.
+permissions:
+  contents: read
+
+# Never run two deploys of the same ref at once; let a running
+# production deploy finish instead of cancelling it.
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
   NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+  TARGET_ENV: ${{ github.event.inputs.environment || 'production' }}
 
 jobs:
   # ─── Gate: Verify code before deploying ───────────────────
+  # (Vercel builds the app itself, so this job only proves the
+  # source type-checks and the tests pass.)
   check:
     name: 🔍 Pre-deploy Verification
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -63,39 +79,21 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: TypeScript check (Dashboard)
-        working-directory: services/dashboard
-        run: npx tsc --noEmit --pretty
-
-      - name: TypeScript check (Guard)
-        working-directory: services/guard
-        run: npx tsc --noEmit --pretty
-
-      - name: TypeScript check (Kiosk)
-        working-directory: services/kiosk
-        run: npx tsc --noEmit --pretty
+      - name: TypeScript check (all services)
+        run: pnpm typecheck
 
       - name: Run tests
         working-directory: services/kiosk
         run: npx vitest run --reporter=verbose
 
-      - name: Build Dashboard
-        working-directory: services/dashboard
-        run: pnpm build
-
-      - name: Build Guard
-        working-directory: services/guard
-        run: pnpm build
-
-      - name: Build Kiosk
-        working-directory: services/kiosk
-        run: pnpm build
-
   # ─── Deploy to Vercel ─────────────────────────────────────
   deploy:
     name: 🚀 Deploy ${{ matrix.service }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [check]
+    environment:
+      name: ${{ github.event.inputs.environment || 'production' }}
     if: |
       success() &&
       (github.event_name != 'workflow_dispatch' ||
@@ -130,18 +128,26 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install Vercel CLI
+        run: pnpm add -g vercel@latest
+
+      - name: Pull Vercel project settings & env
+        working-directory: services/${{ matrix.service }}
+        run: vercel pull --yes --environment=${{ env.TARGET_ENV }} --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ matrix.vercel-project-id }}
+
       - name: Build ${{ matrix.service }}
         working-directory: services/${{ matrix.service }}
-        run: pnpm build
+        run: vercel build ${{ env.TARGET_ENV == 'production' && '--prod' || '' }} --token=${{ secrets.VERCEL_TOKEN }}
         env:
-          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
-          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ matrix.vercel-project-id }}
 
       - name: Deploy ${{ matrix.service }} to Vercel
-        uses: amondnet/vercel-action@v25
-        with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ matrix.vercel-project-id }}
-          vercel-args: ${{ github.event.inputs.environment == 'preview' && '' || '--prod' }}
-          working-directory: services/${{ matrix.service }}
+        working-directory: services/${{ matrix.service }}
+        run: vercel deploy --prebuilt ${{ env.TARGET_ENV == 'production' && '--prod' || '' }} --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ matrix.vercel-project-id }}

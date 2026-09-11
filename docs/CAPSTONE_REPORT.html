@@ -410,9 +410,9 @@
       <li>Face recognition with &gt;95% accuracy using ArcFace ONNX (512-dim embeddings)</li>
       <li>Complete offline operation — no internet required for core AI functions</li>
       <li>Three-photo enrollment (front, left 45°, right 45°) for robust matching</li>
-      <li>YOLO-based uniform detection with color-based fallback</li>
+      <li>YOLO11n-based uniform detection with fail-closed behavior when the model is unavailable</li>
       <li>IndexedDB offline storage with background sync to Supabase</li>
-      <li>Arduino-based gate control via Web Serial API</li>
+      <li>ESP32-based gate control over Wi-Fi (WebSocket, own hotspot) with USB/Arduino fallback</li>
       <li>CI/CD pipeline with automated testing (28 unit tests)</li>
       <li>Deployment on Vercel free tier</li>
     </ol>
@@ -647,7 +647,7 @@ uniform.ts ─sendToWorker("yolo_infer")───┤
   <div class="diagram">
 <span class="hl">kiosk/src/lib/</span>
 ├── <span class="hl-green">face.ts</span>           MediaPipe face detection + ArcFace recognition + matching
-├── <span class="hl-green">uniform.ts</span>        YOLO11n uniform detection + color fallback
+ (fail closed if model unavailable)
 ├── <span class="hl-green">arduino.ts</span>        Web Serial API — gate open/close + auto-reconnect
 ├── <span class="hl-green">db.ts</span>             IndexedDB — students, logs, settings
 ├── <span class="hl-green">supabase.ts</span>       Cloud sync — download/upload + connection management
@@ -686,7 +686,7 @@ loop()
   │   ├── Compute cosine similarity vs all enrolled
   │   │
   │   └── If matched:
-  │       ├── Check uniform (YOLO or color fallback)
+  │       ├── Check uniform (YOLO; fails closed if no model is loaded)
   │       ├── Decision: Grant / Deny / Continue
   │       ├── If granted: open gate (Arduino / simulated)
   │       ├── Log access to IndexedDB
@@ -725,8 +725,8 @@ loop()
       <p>Uses a ref-based mutex to prevent concurrent photo processing when sync triggers while already processing.</p>
     </div>
     <div class="card">
-      <h4>📡 Graceful Degradation</h4>
-      <p>If YOLO model isn't loaded → color-based fallback. If face recognizer fails → detection-only mode. If offline → local-only mode.</p>
+      <h4>📡 Fail-Closed Uniform Validation</h4>
+      <p>If the YOLO model cannot load, uniform validation does not silently approve access — it denies the attempt and logs the reason. Face recognition can still run in detection-only mode if ArcFace is unavailable, but uniform enforcement is not bypassed.</p>
     </div>
   </div>
 </div>
@@ -924,7 +924,7 @@ function cosineSimilarity(a, b) {
 
   <h3>9.4 Uniform Detection</h3>
   <div class="card">
-    <p>Uniform detection uses YOLO11n (custom-trained ONNX model) running in the Web Worker. If no model is loaded, a color-based fallback is used:</p>
+    <p>Uniform detection uses YOLO11n (custom-trained ONNX model) running in the Web Worker. If the model cannot be loaded, the kiosk does not silently approve access — it denies the attempt and logs the reason.</p>
     <div class="diagram" style="margin: 1rem 0;">
 <span class="comment">// Uniform detection pipeline</span>
 
@@ -938,8 +938,8 @@ checkUniform(video, faceBbox, expectedUniform, canvas)
 │   │   ├── Check: detected class matches expected uniform?
 │   │   └── Return { ok, confidence, detail }
 │   │
-│   └── No → <span class="hl-yellow">Color fallback</span>
-│       └── Return { ok: true, detail: "Color check" }
+│   └── No → <span class="hl-red">Fail closed — access denied</span>
+│       └── Return { ok: false, detail: "Uniform detector unavailable" }
 │
 └── Return result
     </div>
@@ -974,7 +974,7 @@ checkUniform(video, faceBbox, expectedUniform, canvas)
   <h2 id="hardware">10. Hardware Integration</h2>
   <div class="section-divider"></div>
 
-  <p>The hardware layer represents approximately 10% of the system and consists of a single Arduino Uno connected via USB-OTG to the tablet.</p>
+  <p>The hardware layer represents approximately 10% of the system. The primary gate controller is an ESP32 DevKit V1 that creates its own Wi-Fi hotspot (no internet, no school network required); the tablet controls it over WebSocket and receives live gate-state feedback. An Arduino Uno over USB-OTG remains as an automatic fallback transport.</p>
 
   <h3>10.1 Components</h3>
   <div class="table-wrap">
@@ -988,7 +988,7 @@ checkUniform(video, faceBbox, expectedUniform, canvas)
       </thead>
       <tbody>
         <tr>
-          <td>Arduino Uno (or Nano)</td>
+          <td>ESP32 DevKit V1 (primary) / Arduino Uno (fallback)</td>
           <td>~$25</td>
           <td>Gate controller — receives commands via USB serial</td>
         </tr>
@@ -1029,8 +1029,9 @@ checkUniform(video, faceBbox, expectedUniform, canvas)
   └───(receive 'C')─────────┴───(servo 0°)────────────┘
   </div>
 
-  <h3>10.3 Web Serial API Integration</h3>
-  <p>The browser communicates with the Arduino using the <strong>Web Serial API</strong>, available in Chrome and Edge on Android:</p>
+  <h3>10.3 Transports: WebSocket (ESP32) + Web Serial (Arduino)</h3>
+  <p><strong>Primary (Wi-Fi):</strong> the ESP32 runs its own hotspot (<code>SmartGate-Gate1</code>) and a WebSocket server on <code>ws://192.168.4.1:81</code>. The tablet joins the hotspot and controls the gate — fully offline, no broker or internet. The ESP32 broadcasts its state on every change (<code>S:OPEN</code>…), enabling the gate feedback loop recorded in each access log (<code>gate_state</code>).</p>
+  <p><strong>Fallback (USB):</strong> the browser communicates with an Arduino Uno using the <strong>Web Serial API</strong>, available in Chrome and Edge on Android:</p>
   <pre><code>// arduino.ts — Key functions
 
 // 1. Connect (user must click to pair)

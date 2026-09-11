@@ -17,6 +17,37 @@
 
 import * as ort from "onnxruntime-web";
 
+// ─── Benign ORT chatter filter ──────────────────────────────
+// ONNX Runtime prints informational warnings about execution-provider
+// fallback while creating sessions (e.g. "removing requested execution
+// provider webgl...", "Some nodes were not assigned..."). These are
+// expected and harmless — inference simply runs on the WASM/CPU path.
+// The main-thread console filter (consoleFilter.ts) cannot see logs
+// printed inside this worker, so we patch the worker console here.
+const BENIGN_ORT_PATTERNS: RegExp[] = [
+  /removing requested execution provider .* because it is not available/i,
+  /Some nodes were not assigned to the preferred execution providers/i,
+  /Rerunning with verbose output on a non-minimal build will show node assignments\./i,
+];
+
+function installWorkerConsoleFilter(): void {
+  const origWarn = self.console.warn.bind(self.console);
+  const origError = self.console.error.bind(self.console);
+
+  self.console.warn = (...args: unknown[]) => {
+    if (args.some((a) => typeof a === "string" && BENIGN_ORT_PATTERNS.some((re) => re.test(a))))
+      return;
+    origWarn(...args);
+  };
+  self.console.error = (...args: unknown[]) => {
+    if (args.some((a) => typeof a === "string" && BENIGN_ORT_PATTERNS.some((re) => re.test(a))))
+      return;
+    origError(...args);
+  };
+}
+
+installWorkerConsoleFilter();
+
 // ─── Types ──────────────────────────────────────────────────
 
 interface WorkerMessage {
@@ -63,7 +94,16 @@ const NMS_IOU_THRESHOLD = 0.5;
 
 // ─── Message Handler ────────────────────────────────────────
 
-self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
+// ONNX Runtime Web sessions are not safe for overlapping `run()` calls.
+// Serialize all worker messages so face and uniform inference cannot corrupt
+// a session or fail with "Session already started" on fast camera loops.
+let messageQueue = Promise.resolve();
+
+self.onmessage = (event: MessageEvent<WorkerMessage>) => {
+  messageQueue = messageQueue.then(() => handleWorkerMessage(event));
+};
+
+async function handleWorkerMessage(event: MessageEvent<WorkerMessage>) {
   const { type, id, data } = event.data;
 
   try {
@@ -106,28 +146,53 @@ self.onmessage = async (event: MessageEvent<WorkerMessage>) => {
       data: errorMsg,
     });
   }
-};
+}
 
 // ─── Initialization ─────────────────────────────────────────
+
+/**
+ * Pick execution providers that actually exist in this browser.
+ * Requesting an EP that isn't loaded makes ORT log warnings and
+ * waste time during session creation. WebGPU is used when exposed
+ * (Chrome/Android tablets); everything else runs on WASM/CPU.
+ * WebGL is never requested: the wasm bundle used here has no WebGL
+ * backend, so it always falls back anyway.
+ */
+export function resolveExecutionProviders(gpuAvailable: boolean): Array<"webgpu" | "wasm"> {
+  return gpuAvailable ? ["webgpu", "wasm"] : ["wasm"];
+}
+
+function isWebGpuAvailable(): boolean {
+  try {
+    return (
+      typeof navigator !== "undefined" &&
+      "gpu" in navigator &&
+      !!(navigator as { gpu?: unknown }).gpu
+    );
+  } catch {
+    return false;
+  }
+}
 
 async function initFaceSession(modelUrl: string): Promise<void> {
   if (faceSession) return;
 
-  ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/";
+  // Keep CDN WASM binaries exactly aligned with the installed runtime version.
+  ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/";
 
-  // 🔴 ACCURACY FIX #1: Use WebGPU + WebGL for GPU acceleration (much faster than WASM)
   faceSession = await ort.InferenceSession.create(modelUrl, {
-    executionProviders: ["webgpu", "webgl", "wasm"],
+    executionProviders: resolveExecutionProviders(isWebGpuAvailable()),
   });
 }
 
 async function initYoloSession(modelUrl: string): Promise<void> {
   if (yoloSession) return;
 
-  ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.0/dist/";
+  // Keep CDN WASM binaries exactly aligned with the installed runtime version.
+  ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/";
 
   yoloSession = await ort.InferenceSession.create(modelUrl, {
-    executionProviders: ["webgpu", "webgl", "wasm"],
+    executionProviders: resolveExecutionProviders(isWebGpuAvailable()),
   });
 }
 
@@ -225,6 +290,8 @@ function postprocess(
 ): YoloDetection[] {
   if (dims.length < 3) return [];
 
+  // Output layout is [1, 4 + classes, anchors] — the standard Ultralytics ONNX
+  // export, which is what this model was produced with.
   const [, , numDetections] = dims;
   const boxes: YoloDetection[] = [];
 
@@ -278,8 +345,11 @@ function nonMaxSuppression(detections: YoloDetection[], iouThreshold: number): Y
     result.push(best);
 
     for (let i = sorted.length - 1; i >= 0; i--) {
+      // Keep overlapping boxes when they represent different uniform classes.
+      // Class-aware NMS prevents one person wearing a mixed/occluded uniform
+      // from causing a valid class detection to disappear.
       const iou = calculateIoU(best.bbox, sorted[i].bbox);
-      if (iou > iouThreshold) {
+      if (best.classId === sorted[i].classId && iou > iouThreshold) {
         sorted.splice(i, 1);
       }
     }
