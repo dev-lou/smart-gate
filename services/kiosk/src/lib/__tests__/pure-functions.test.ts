@@ -692,3 +692,223 @@ describe("isBenignWasmLog", () => {
     expect(isBenignWasmLog(["WebSocket error: connection refused"])).toBe(false);
   });
 });
+
+// ─── Scan policy (lib/scanPolicy.ts) ────────────────────────
+// Guards the fix for one student producing 140 access rows in a single sitting:
+// after a decision the kiosk only re-arms once the gate area is empty.
+
+import {
+  PERSON_COOLDOWN_MS,
+  REARM_ABSENCE_MS,
+  UNKNOWN_DWELL_MS,
+  clampGateWindow,
+  gateStateForLog,
+  isRepeatDecision,
+  isSettledUnknown,
+  nextPresence,
+  resolveGateOutcome,
+  visitGeneration,
+} from "../scanPolicy";
+
+describe("scan policy — re-arm on absence", () => {
+  it("keeps a fresh kiosk armed when nobody is in frame", () => {
+    const state = nextPresence({
+      facePresent: false,
+      state: { faceFreeSince: 0, rearmed: true },
+      now: 1000,
+    });
+    expect(state.rearmed).toBe(true);
+  });
+
+  it("does NOT re-arm while the same person keeps standing there", () => {
+    // Decision logged at t=0, so rearmed starts false; the face never leaves.
+    let state = { faceFreeSince: 0, rearmed: false };
+    for (let t = 0; t <= 60_000; t += 500) {
+      state = nextPresence({ facePresent: true, state, now: t });
+      expect(state.rearmed).toBe(false);
+    }
+    expect(state.faceFreeSince).toBe(0);
+  });
+
+  it("re-arms only after the frame has been empty for the whole absence window", () => {
+    let state = { faceFreeSince: 0, rearmed: false };
+
+    // Person leaves at t=1000.
+    state = nextPresence({ facePresent: false, state, now: 1000 });
+    expect(state.faceFreeSince).toBe(1000);
+    expect(state.rearmed).toBe(false);
+
+    // Still inside the window.
+    state = nextPresence({ facePresent: false, state, now: 1000 + REARM_ABSENCE_MS - 1 });
+    expect(state.rearmed).toBe(false);
+
+    // Window elapsed.
+    state = nextPresence({ facePresent: false, state, now: 1000 + REARM_ABSENCE_MS });
+    expect(state.rearmed).toBe(true);
+  });
+
+  it("keeps the empty-since clock fixed while the frame stays empty", () => {
+    let state = nextPresence({
+      facePresent: false,
+      state: { faceFreeSince: 0, rearmed: false },
+      now: 5000,
+    });
+    expect(state.faceFreeSince).toBe(5000);
+    expect(state.rearmed).toBe(false);
+
+    // The clock must not drift forward on later frames.
+    state = nextPresence({ facePresent: false, state, now: 9000 });
+    expect(state.faceFreeSince).toBe(5000);
+    // 4s of empty frame is past the window, so the kiosk is armed again.
+    expect(state.rearmed).toBe(true);
+  });
+
+  it("restarts the absence window when someone walks back into frame", () => {
+    let state = { faceFreeSince: 0, rearmed: false };
+
+    // Someone walks in — the clock resets to zero.
+    state = nextPresence({ facePresent: true, state, now: 9500 });
+    expect(state.faceFreeSince).toBe(0);
+    expect(state.rearmed).toBe(false);
+
+    // They leave again; the window is measured from the new empty moment.
+    state = nextPresence({ facePresent: false, state, now: 9600 });
+    expect(state.faceFreeSince).toBe(9600);
+    expect(state.rearmed).toBe(false);
+    expect(
+      nextPresence({ facePresent: false, state, now: 9600 + REARM_ABSENCE_MS - 1 }).rearmed,
+    ).toBe(false);
+    expect(nextPresence({ facePresent: false, state, now: 9600 + REARM_ABSENCE_MS }).rearmed).toBe(
+      true,
+    );
+  });
+});
+
+describe("scan policy — per-person cooldown", () => {
+  it("never treats a first-ever decision as a repeat", () => {
+    expect(isRepeatDecision({ lastDecisionAt: 0, now: 1_000_000 })).toBe(false);
+  });
+
+  it("suppresses a second decision inside the cooldown window", () => {
+    const first = 1_000_000;
+    expect(isRepeatDecision({ lastDecisionAt: first, now: first + 6_000 })).toBe(true);
+    expect(isRepeatDecision({ lastDecisionAt: first, now: first + PERSON_COOLDOWN_MS - 1 })).toBe(
+      true,
+    );
+  });
+
+  it("allows a genuinely new arrival once the cooldown has passed", () => {
+    const first = 1_000_000;
+    expect(isRepeatDecision({ lastDecisionAt: first, now: first + PERSON_COOLDOWN_MS })).toBe(
+      false,
+    );
+
+    // Morning class 7:40 AM, afternoon class 1:10 PM — hours apart.
+    const morning = new Date("2026-09-12T07:40:00").getTime();
+    const afternoon = new Date("2026-09-12T13:10:00").getTime();
+    expect(isRepeatDecision({ lastDecisionAt: morning, now: afternoon })).toBe(false);
+  });
+});
+
+describe("scan policy — unrecognised-face dwell", () => {
+  // Real numbers from this hardware: a student walking up measured 0.26 on the
+  // first frame and 0.63 two seconds later. The low read must not be logged as
+  // a denial, nor shown as a score.
+  it("does not call a moving walk-up frame unrecognised", () => {
+    expect(isSettledUnknown({ matched: false, firstSeenAt: 1000, now: 1200 })).toBe(false);
+  });
+
+  it("settles once the low reading has persisted for the full dwell", () => {
+    expect(
+      isSettledUnknown({ matched: false, firstSeenAt: 1000, now: 1000 + UNKNOWN_DWELL_MS - 1 }),
+    ).toBe(false);
+    expect(
+      isSettledUnknown({ matched: false, firstSeenAt: 1000, now: 1000 + UNKNOWN_DWELL_MS }),
+    ).toBe(true);
+  });
+
+  it("is never 'unrecognised' once the face matched", () => {
+    expect(isSettledUnknown({ matched: true, firstSeenAt: 1000, now: 99_000 })).toBe(false);
+  });
+
+  it("stays unsettled until the dwell clock actually starts", () => {
+    expect(isSettledUnknown({ matched: false, firstSeenAt: 0, now: 99_000 })).toBe(false);
+  });
+});
+
+describe("scan policy — visit generations", () => {
+  // A generation is one person's stay at the gate. A new generation (and with
+  // it a new access row) only exists after the scanner re-arms — which needs
+  // the frame to have been empty for the full absence window. That is the
+  // whole fix for "I stepped out for one second and it logged me again".
+  it("stays in the same visit when the frame never empties", () => {
+    expect(visitGeneration({ rearmed: false, current: 3 })).toEqual({ gen: 3, isNew: false });
+  });
+
+  it("only advances the generation once the scanner has re-armed", () => {
+    expect(visitGeneration({ rearmed: true, current: 3 })).toEqual({ gen: 4, isNew: true });
+  });
+
+  it("a one-second dart out of frame does not start a new visit", () => {
+    // Exactly the reported bug: dart out for ~1s, return, get logged twice.
+    // 1s < REARM_ABSENCE_MS, so the scanner never re-arms during the dart.
+    let gen = 1;
+    let state = { faceFreeSince: 0, rearmed: false };
+
+    // Person present, granted, scanner locks.
+    state = nextPresence({ facePresent: true, state, now: 0 });
+    gen = visitGeneration({ rearmed: state.rearmed, current: gen }).gen;
+
+    // Darts out for 1s (below the 1.5s window) ...
+    state = nextPresence({ facePresent: false, state, now: 1000 });
+    expect(state.rearmed).toBe(false); // not yet
+    // ... and is back before the window elapses.
+    state = nextPresence({ facePresent: true, state, now: 1200 });
+    gen = visitGeneration({ rearmed: state.rearmed, current: gen }).gen;
+
+    expect(gen).toBe(1); // same visit — no second row is possible
+  });
+
+  it("a real departure starts a fresh visit, so the next student logs", () => {
+    let gen = 1;
+    let state = { faceFreeSince: 0, rearmed: false };
+
+    state = nextPresence({ facePresent: true, state, now: 0 });
+    gen = visitGeneration({ rearmed: state.rearmed, current: gen }).gen;
+
+    // Leaves, frame stays empty past the window.
+    state = nextPresence({ facePresent: false, state, now: 1000 });
+    state = nextPresence({ facePresent: false, state, now: 1000 + REARM_ABSENCE_MS });
+    expect(state.rearmed).toBe(true);
+
+    gen = visitGeneration({ rearmed: state.rearmed, current: gen }).gen;
+    expect(gen).toBe(2); // new visit — next student is recorded normally
+  });
+});
+
+describe("scan policy — gate reporting", () => {
+  it("reports OPEN only when the controller confirmed it", () => {
+    expect(resolveGateOutcome({ gateConnected: true, confirmed: true })).toBe("OPEN");
+    expect(gateStateForLog({ gateConnected: true, confirmed: true })).toBe("open");
+  });
+
+  it("reports AWAITING when a controller is linked but silent", () => {
+    expect(resolveGateOutcome({ gateConnected: true, confirmed: false })).toBe("AWAITING");
+    expect(gateStateForLog({ gateConnected: true, confirmed: false })).toBe("unconfirmed");
+  });
+
+  it("reports SENT (demo) instead of pretending an unwired barrier opened", () => {
+    expect(resolveGateOutcome({ gateConnected: false, confirmed: false })).toBe("SENT");
+    expect(resolveGateOutcome({ gateConnected: false, confirmed: true })).toBe("SENT");
+    expect(gateStateForLog({ gateConnected: false })).toBe("simulated");
+  });
+
+  it("clamps the gate window so a bad settings row cannot hide the barrier", () => {
+    expect(clampGateWindow(5)).toBe(5);
+    expect(clampGateWindow(2.4)).toBe(3);
+    expect(clampGateWindow(0)).toBe(3);
+    expect(clampGateWindow(-3)).toBe(3);
+    expect(clampGateWindow(Number.NaN)).toBe(5);
+    expect(clampGateWindow(600)).toBe(60);
+  });
+});

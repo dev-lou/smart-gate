@@ -144,8 +144,8 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run tests
-        working-directory: services/kiosk
-        run: npx vitest run --reporter=verbose
+        working-directory: .
+        run: npx turbo run test
 
   # ─── Summary ──────────────────────────────────────────────
   summary:
@@ -162,4 +162,4 @@ jobs:
           echo "| Format (Prettier) | ${{ needs.lint.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| TypeCheck (3 services) | ${{ needs.typecheck.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Build (3 services) | ${{ needs.build.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Unit Tests (kiosk) | ${{ needs.test.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Unit Tests (kiosk + dashboard) | ${{ needs.test.result == 'success' && '✅' || '❌' }} |" >> $GITHUB_STEP_SUMMARY

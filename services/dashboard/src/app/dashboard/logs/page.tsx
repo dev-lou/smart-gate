@@ -4,6 +4,14 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { ClipboardList, RefreshCw, CheckCircle2, XCircle, SearchX } from "lucide-react";
+import {
+  countArrivals,
+  formatRelative,
+  formatScanClock,
+  formatScanTime,
+  summarizeDay,
+  type AccessLogLike,
+} from "@/lib/attendance";
 
 interface AccessLog {
   id: string;
@@ -15,6 +23,7 @@ interface AccessLog {
   uniform_ok: boolean | null;
   failure_reason: string | null;
   gate_state: string | null;
+  direction: string | null;
   device_timestamp: string;
   created_at: string;
 }
@@ -27,6 +36,11 @@ export default function LogsPage() {
   const [error, setError] = useState("");
   const [filter, setFilter] = useState<"all" | "granted" | "denied">("all");
   const [dateRange, setDateRange] = useState("24h");
+  /**
+   * Today's granted reads, fetched separately from the table so the attendance
+   * panel always covers the whole day regardless of the table's date filter.
+   */
+  const [todayGrants, setTodayGrants] = useState<AccessLogLike[]>([]);
 
   useEffect(() => {
     const supabase = getSupabase();
@@ -74,11 +88,14 @@ export default function LogsPage() {
         since = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     }
 
+    // Filter and sort on the SCAN time. `created_at` is only when the row
+    // reached the cloud, so a kiosk that was offline makes yesterday's reads
+    // look like they happened minutes ago.
     let query = supabase
       .from("access_logs")
       .select("*")
-      .gte("created_at", since.toISOString())
-      .order("created_at", { ascending: false })
+      .gte("device_timestamp", since.toISOString())
+      .order("device_timestamp", { ascending: false })
       .limit(200);
 
     if (filter === "granted") query = query.eq("success", true);
@@ -91,20 +108,24 @@ export default function LogsPage() {
     } else {
       setLogs(data ?? []);
     }
+
+    // Attendance panel data: today's grants only, ignoring the table filters.
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const { data: todayData } = await supabase
+      .from("access_logs")
+      .select("person_name, success, device_timestamp, direction")
+      .gte("device_timestamp", startOfToday.toISOString())
+      .eq("success", true)
+      .order("device_timestamp", { ascending: true })
+      .limit(1000);
+    setTodayGrants((todayData ?? []) as AccessLogLike[]);
+
     setLoading(false);
   }
 
-  function formatTimestamp(ts: string) {
-    const d = new Date(ts);
-    const now = new Date();
-    const diff = now.getTime() - d.getTime();
-    const mins = Math.floor(diff / 60000);
-    if (mins < 1) return "Just now";
-    if (mins < 60) return `${mins}m ago`;
-    const hours = Math.floor(mins / 60);
-    if (hours < 24) return `${hours}h ago`;
-    return d.toLocaleDateString();
-  }
+  const attendance = summarizeDay(todayGrants, new Date());
+  const arrivals = countArrivals(attendance);
 
   return (
     <div>
@@ -160,6 +181,57 @@ export default function LogsPage() {
         </select>
       </div>
 
+      {/* Today's attendance — one arrival per session, per person. A student
+          crossing twice a day is normal, so this is the reading that matters;
+          the table below stays the raw audit trail. */}
+      {attendance.length > 0 && (
+        <div className="mb-6 bg-white rounded-2xl shadow-sm border border-surface-200 overflow-hidden">
+          <div className="px-5 py-4 border-b border-surface-100 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-black text-surface-900 tracking-tight uppercase">
+                Today&apos;s Attendance
+              </h2>
+              <p className="text-surface-500 font-medium text-xs mt-0.5">
+                First granted read of each session — counts a morning and an afternoon arrival
+              </p>
+            </div>
+            <span className="text-xs font-bold text-surface-500 shrink-0">
+              {arrivals} arrival{arrivals === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div className="divide-y divide-surface-50">
+            {attendance.map((row) => (
+              <div key={row.name} className="px-5 py-3 flex items-center gap-3 sm:gap-4">
+                <span className="font-bold text-surface-900 text-sm flex-1 min-w-0 truncate">
+                  {row.name}
+                </span>
+                <span className="text-xs font-mono text-surface-400 shrink-0 hidden sm:block">
+                  {row.reads} read{row.reads === 1 ? "" : "s"}
+                </span>
+                <span
+                  className={`px-2.5 py-1 rounded-md text-xs font-bold shrink-0 ${
+                    row.amFirst
+                      ? "bg-emerald-50 text-emerald-700"
+                      : "bg-surface-100 text-surface-400"
+                  }`}
+                >
+                  AM {row.amFirst ? formatScanClock(row.amFirst) : "—"}
+                </span>
+                <span
+                  className={`px-2.5 py-1 rounded-md text-xs font-bold shrink-0 ${
+                    row.pmFirst
+                      ? "bg-emerald-50 text-emerald-700"
+                      : "bg-surface-100 text-surface-400"
+                  }`}
+                >
+                  PM {row.pmFirst ? formatScanClock(row.pmFirst) : "—"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Logs */}
       <div className="bg-white rounded-2xl shadow-sm border border-surface-200 overflow-hidden">
         {loading ? (
@@ -183,6 +255,7 @@ export default function LogsPage() {
                   <th className="table-header">Person</th>
                   <th className="table-header">Type</th>
                   <th className="table-header">Method</th>
+                  <th className="table-header">Direction</th>
                   <th className="table-header">Status</th>
                   <th className="table-header">Confidence</th>
                   <th className="table-header">Uniform</th>
@@ -196,8 +269,14 @@ export default function LogsPage() {
                     key={log.id}
                     className="border-b border-surface-50 hover:bg-surface-50 transition-colors"
                   >
-                    <td className="table-cell text-surface-500 font-medium text-xs whitespace-nowrap">
-                      {formatTimestamp(log.created_at)}
+                    <td className="table-cell whitespace-nowrap">
+                      <span className="block text-surface-900 font-bold text-xs">
+                        {formatScanTime(log.device_timestamp)}
+                      </span>
+                      {/* Relative against the SCAN time, not the upload time. */}
+                      <span className="block text-surface-400 font-medium text-[11px]">
+                        {formatRelative(log.device_timestamp)}
+                      </span>
                     </td>
                     <td className="table-cell font-bold text-surface-900">
                       {log.person_name || "Unknown"}
@@ -208,6 +287,11 @@ export default function LogsPage() {
                     <td className="table-cell">
                       <span className="text-xs font-bold font-mono text-surface-500 uppercase">
                         {log.method}
+                      </span>
+                    </td>
+                    <td className="table-cell">
+                      <span className="text-xs font-bold text-surface-500 uppercase">
+                        {log.direction || "—"}
                       </span>
                     </td>
                     <td className="table-cell">

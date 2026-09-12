@@ -69,6 +69,9 @@ importers:
       typescript:
         specifier: ^5.3.3
         version: 5.9.3
+      vitest:
+        specifier: ^3.1.2
+        version: 3.2.7(@types/node@20.19.43)(jiti@1.21.7)
 
   services/guard:
     dependencies:

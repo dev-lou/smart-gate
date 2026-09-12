@@ -214,6 +214,68 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * The exact column set the kiosk writes to `access_logs` (migration 006 schema).
+ */
+interface AccessLogRow {
+  person_id: string | null;
+  person_name: string | null;
+  person_type: string | null;
+  direction: string;
+  method: string;
+  success: boolean;
+  confidence: number | null;
+  uniform_ok: boolean | null;
+  failure_reason: string | null;
+  gate_state: string | null;
+  device_timestamp: string;
+  sync_id: string;
+}
+
+/**
+ * True when the error is the unique-index conflict on `sync_id`.
+ * The row was already stored by an earlier attempt and only the response was
+ * lost, so this is the correct end state — not a failure.
+ */
+function isDuplicateKeyError(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  return error.code === "23505" || /duplicate key value/i.test(error.message ?? "");
+}
+
+/**
+ * A permission/authentication failure. Retrying or moving to the next batch can
+ * never succeed, so the whole sync stops instead of burning the log queue.
+ */
+function isFatalAuthError(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  return (
+    error.code === "PGRST301" ||
+    error.code === "401" ||
+    error.code === "403" ||
+    error.code === "42501"
+  );
+}
+
+/**
+ * Insert rows one at a time, treating "already stored" as success.
+ *
+ * A batch insert is atomic: one repeated `sync_id` fails all of it with 23505.
+ * This walk recovers that case without losing or double-counting anything.
+ * Returns true when every row is now either newly stored or already present.
+ */
+async function insertRowsIndividually(rows: AccessLogRow[]): Promise<boolean> {
+  if (!supabase) return false;
+
+  let allStored = true;
+  for (const row of rows) {
+    const { error } = await supabase.from("access_logs").insert(row);
+    if (!error || isDuplicateKeyError(error)) continue;
+    console.error(`[Supabase] Log ${row.sync_id} rejected:`, error.message);
+    allStored = false;
+  }
+  return allStored;
+}
+
+/**
  * Upload unsynchronized access logs to Supabase.
  * Uses batched inserts with retry + exponential backoff.
  * Each log includes a `sync_id` for idempotency (prevents duplicates).
@@ -234,37 +296,52 @@ export async function uploadLogs(): Promise<number> {
     let lastError: Error | null = null;
     let success = false;
 
+    const rows: AccessLogRow[] = batch.map((log) => ({
+      person_id: log.person_id,
+      person_name: log.person_name,
+      person_type: log.person_type,
+      direction: log.direction,
+      method: log.method,
+      success: log.success,
+      confidence: log.confidence,
+      uniform_ok: log.uniform_ok,
+      failure_reason: log.failure_reason,
+      gate_state: log.gate_state ?? null,
+      device_timestamp: log.device_timestamp,
+      // Server-side idempotency key; migration 006 adds the indexed column.
+      sync_id: log.sync_id,
+    }));
+
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       try {
-        const { error } = await supabase.from("access_logs").upsert(
-          batch.map((log) => ({
-            person_id: log.person_id,
-            person_name: log.person_name,
-            person_type: log.person_type,
-            direction: log.direction,
-            method: log.method,
-            success: log.success,
-            confidence: log.confidence,
-            uniform_ok: log.uniform_ok,
-            failure_reason: log.failure_reason,
-            gate_state: log.gate_state ?? null,
-            device_timestamp: log.device_timestamp,
-            // Server-side idempotency key; migration 006 adds the indexed column.
-            sync_id: log.sync_id,
-          })),
-          {
-            onConflict: "sync_id",
-            ignoreDuplicates: true,
-          },
-        );
+        // Plain INSERT — deliberately NOT upsert().
+        //
+        // PostgREST compiles an upsert with `onConflict` into
+        // `INSERT ... ON CONFLICT (sync_id) DO NOTHING`, and PostgreSQL needs
+        // SELECT (read) rights on the table to arbitrate that conflict. The
+        // kiosk authenticates anonymously and migration 006 grants the anon
+        // role INSERT only, so every upsert was rejected with
+        // "new row violates row-level security policy for table access_logs"
+        // (HTTP 401) and the entire queue stalled forever. A plain INSERT needs
+        // nothing beyond the INSERT policy. Idempotency is preserved below.
+        const { error } = await supabase.from("access_logs").insert(rows);
 
         if (error) {
           lastError = error;
-          // Auth errors are fatal — stop immediately
-          if (error.code === "PGRST301" || error.code === "401") {
+
+          // A batch insert is atomic, so one already-stored sync_id (a retry
+          // after a lost response) fails all of it. Recover row by row.
+          if (isDuplicateKeyError(error)) {
+            if (await insertRowsIndividually(rows)) {
+              success = true;
+              break;
+            }
+          } else if (isFatalAuthError(error)) {
+            // Auth/permission errors are fatal — stop immediately
             console.error("[Supabase] Auth error — stopping sync:", error);
             break;
           }
+
           // Network/server errors — retry with backoff
           if (attempt < MAX_RETRIES - 1) {
             const delay = RETRY_BASE_DELAY * Math.pow(2, attempt);

@@ -34,6 +34,17 @@ import {
   type GateTransport,
 } from "@/lib/gate";
 import {
+  LAST_RESULT_HOLD_MS,
+  NOTICE_WINDOW_MS,
+  VERDICT_HOLD_MS,
+  clampGateWindow,
+  gateStateForLog,
+  isRepeatDecision,
+  isSettledUnknown,
+  nextPresence,
+  resolveGateOutcome,
+} from "@/lib/scanPolicy";
+import {
   getEnrolledFaces,
   getAllStudents,
   addLog,
@@ -302,7 +313,34 @@ export default function KioskPage() {
   const [fps, setFps] = useState(0);
   const [gateConnected, setGateConnected] = useState(false);
   const [gateTransport, setGateTransport] = useState<GateTransport | null>(null);
+  // "OPEN" (controller confirmed) | "AWAITING" (linked but unconfirmed) |
+  // "SENT" (command issued, no controller linked — demo mode)
   const [gateState, setGateState] = useState<string | null>(null);
+  /** Seconds left in the gate open window, shown on the verdict card. */
+  const [gateSecondsLeft, setGateSecondsLeft] = useState<number | null>(null);
+  /** Wall-clock moment the floating gate banner must disappear (0 = none). */
+  const gateBannerUntilRef = useRef(0);
+  /** Survives the verdict card so the screen still shows what just happened. */
+  const [lastDecision, setLastDecision] = useState<{
+    name: string;
+    granted: boolean;
+    at: number;
+  } | null>(null);
+  /**
+   * What to tell someone whose decision is already in the books.
+   *
+   * Set on a grant or a denial and cleared once they step out of frame. Without
+   * it the rail kept saying "Face detected — hold still" with the IDENTITY chip
+   * spinning at a person the kiosk was deliberately NOT re-checking — it read as
+   * a frozen terminal, when the scanner was simply waiting for the gate area to
+   * clear before it would log anyone again.
+   */
+  const [holdNotice, setHoldNotice] = useState<{
+    kind: "granted" | "denied";
+    name: string;
+    at: number;
+    detail?: string;
+  } | null>(null);
   const [syncStatus, setSyncStatus] = useState<string>("");
   const [dbStats, setDbStats] = useState({ studentCount: 0, logCount: 0, unsyncedCount: 0 });
   const [online, setOnline] = useState(true);
@@ -353,9 +391,15 @@ export default function KioskPage() {
 
   // Tracking refs for performance
   const enrolledRef = useRef<EnrolledFace[]>([]);
-  const settingsRef = useRef<{ uniformEnabled: boolean; matchThreshold: number }>({
+  const settingsRef = useRef<{
+    uniformEnabled: boolean;
+    matchThreshold: number;
+    /** Gate open window from Settings — how long the barrier stays released. */
+    gateOpenDuration: number;
+  }>({
     uniformEnabled: true,
     matchThreshold: 0.6,
+    gateOpenDuration: 5,
   });
   const settingsLoadedRef = useRef(false);
 
@@ -380,11 +424,72 @@ export default function KioskPage() {
   const lastSyncRef = useRef<string | null>(null); // For heartbeat reporting
   const lastUnknownBeepRef = useRef(0); // Throttle for unknown-face beep
 
+  // ─── Re-arm / duplicate guards ──────────────────────────
+  // `faceFreeSinceRef` is when the gate area last became empty (0 while someone
+  // is in frame). `rearmedRef` stays false from the moment a decision is logged
+  // until the frame has been empty long enough — that is what stops a lingering
+  // student from being logged again and again.
+  const faceFreeSinceRef = useRef(0);
+  const rearmedRef = useRef(true);
+  /** Last decision timestamp per person_id — enforces the per-person cooldown. */
+  const lastDecisionByPersonRef = useRef<Map<string, number>>(new Map());
+  /** When the current face first measured below the match threshold (0 = none). */
+  const unknownSinceRef = useRef(0);
+  const lastDecisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Render-loop mirror of `holdNotice` — safe to read inside the rAF loop. */
+  const holdNoticeRef = useRef<{
+    kind: "granted" | "denied";
+    name: string;
+    at: number;
+    detail?: string;
+  } | null>(null);
+
   // Keep the overlay ref in lockstep with the uniform result — the animation
   // loop reads refs so it never has to be re-created when a check completes.
   useEffect(() => {
     lastUniformRef.current = lastUniform;
   }, [lastUniform]);
+
+  // Tick the gate-open countdown down once a second, and retire the banner the
+  // moment the configured window elapses — the barrier closing is a real event
+  // the screen must reflect, not something the UI simply forgets.
+  useEffect(() => {
+    if (gateSecondsLeft === null || gateSecondsLeft <= 0) return;
+    const timer = setTimeout(() => {
+      setGateSecondsLeft((seconds) => (seconds === null ? null : seconds - 1));
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [gateSecondsLeft]);
+
+  useEffect(() => {
+    if (gateSecondsLeft !== null && gateSecondsLeft <= 0) {
+      setGateState(null);
+      gateBannerUntilRef.current = 0;
+    }
+  }, [gateSecondsLeft]);
+
+  // Keep the loop-side mirror in lockstep with the notice state.
+  useEffect(() => {
+    holdNoticeRef.current = holdNotice;
+  }, [holdNotice]);
+
+  // Drop the "last result" strip's timer on unmount.
+  useEffect(() => {
+    return () => {
+      if (lastDecisionTimerRef.current) clearTimeout(lastDecisionTimerRef.current);
+    };
+  }, []);
+
+  /**
+   * Show the latest verdict in the small persistent strip.
+   * Called for every logged decision so the screen still carries a trace once
+   * the big card clears and the student has walked away.
+   */
+  function rememberDecision(name: string, granted: boolean) {
+    setLastDecision({ name, granted, at: Date.now() });
+    if (lastDecisionTimerRef.current) clearTimeout(lastDecisionTimerRef.current);
+    lastDecisionTimerRef.current = setTimeout(() => setLastDecision(null), LAST_RESULT_HOLD_MS);
+  }
 
   // ─── Initialization ─────────────────────────────────────
 
@@ -612,10 +717,27 @@ export default function KioskPage() {
       // (instead of every frame) keeps detection smooth and stops the reticle
       // from stalling while a check is in flight.
       const detected = lastFacesRef.current;
+
+      // ─── Presence tracking (re-arm) ─────────────────────
+      // A decision re-arms only once the frame has been empty for a moment.
+      // Face presence only — no biometrics are computed here.
+      const presence = nextPresence({
+        facePresent: detected.length > 0,
+        state: { faceFreeSince: faceFreeSinceRef.current, rearmed: rearmedRef.current },
+        now: Date.now(),
+      });
+      faceFreeSinceRef.current = presence.faceFreeSince;
+      rearmedRef.current = presence.rearmed;
+
+      // The gate area is clear, so the kiosk is available again — retire the
+      // "already recorded" notice so the rail returns to live scanning.
+      if (presence.rearmed && holdNoticeRef.current) setHoldNotice(null);
+
       if (
         detected.length > 0 &&
         !processingRef.current &&
         !scanCooldown.current &&
+        rearmedRef.current &&
         (kioskStateRef.current === "ready" || kioskStateRef.current === "scanning") &&
         Date.now() - lastRecognizedAtRef.current >= RECOGNIZE_INTERVAL_MS
       ) {
@@ -656,9 +778,25 @@ export default function KioskPage() {
     lastMatchRef.current = match;
     setLastMatch(match);
 
+    // A below-threshold read is not a verdict yet. The first frames of a
+    // walk-up are in motion and measure far under the person's real similarity
+    // (0.26 before settling at 0.63), so the dwell clock has to run out before
+    // this counts as an unrecognised visitor. Until then the rail stays in its
+    // neutral "hold still" state instead of flashing a low score.
+    if (match.matched) {
+      unknownSinceRef.current = 0;
+    } else if (unknownSinceRef.current === 0) {
+      unknownSinceRef.current = Date.now();
+    }
+    const settledUnknown = isSettledUnknown({
+      matched: match.matched,
+      firstSeenAt: unknownSinceRef.current,
+      now: Date.now(),
+    });
+
     // Publish the phase for the on-screen pipeline: identity is resolved, so
     // either we are about to read the uniform or this face is unknown.
-    setScanStep(match.matched ? "uniform" : "done");
+    setScanStep(match.matched ? "uniform" : settledUnknown ? "done" : "face");
 
     // Check uniform if matched
     let uniformCheck: UniformCheckResult | null = null;
@@ -684,67 +822,126 @@ export default function KioskPage() {
       }
 
       // 🔴 FEEDBACK LOOP: confirm the gate actually opened (max 3s)
-      const gateOpened = gateConnectedRef.current
+      //
+      // Three honest outcomes, because showing nothing made an unwired gate look
+      // like a broken gate: OPEN (controller confirmed), AWAITING (linked but
+      // silent), SENT (no controller linked — command issued, demo mode).
+      const gateConnectedNow = gateConnectedRef.current;
+      const gateConfirmed = gateConnectedNow
         ? await confirmGateOpen(3000).catch(() => false)
         : false;
-      setGateState(gateOpened ? "OPEN" : null);
+      const gateOutcome = resolveGateOutcome({
+        gateConnected: gateConnectedNow,
+        confirmed: gateConfirmed,
+      });
+      setGateState(gateOutcome);
+      const gateOpenSeconds = clampGateWindow(settingsRef.current.gateOpenDuration);
+      const gateOpenMs = gateOpenSeconds * 1000;
+      setGateSecondsLeft(gateOpenSeconds);
+      gateBannerUntilRef.current = Date.now() + gateOpenMs;
       setStatusMessage(
-        gateOpened
+        gateConfirmed
           ? `Welcome, ${match.person!.name}! Gate OPEN`
           : `Welcome, ${match.person!.name}!`,
       );
 
+      // 🛡️ Duplicate guard — a lingering student (or one who steps out and
+      // straight back in) must not produce a second access row.
+      scanCooldown.current = true;
+      rearmedRef.current = false;
+      const grantedAt = Date.now();
+      const isRepeatGrant = isRepeatDecision({
+        lastDecisionAt: lastDecisionByPersonRef.current.get(match.person!.id) ?? 0,
+        now: grantedAt,
+      });
+      if (!isRepeatGrant) lastDecisionByPersonRef.current.set(match.person!.id, grantedAt);
+      rememberDecision(match.person!.name, true);
+      setHoldNotice({ kind: "granted", name: match.person!.name, at: grantedAt });
+
       // Log access (with gate feedback result)
-      await addLog({
-        person_id: match.person!.id,
-        person_name: match.person!.name,
-        person_type: "student",
-        direction: "entry",
-        method: "face",
-        success: true,
-        confidence: match.confidence,
-        uniform_ok: uniformCheck?.ok ?? null,
-        failure_reason: null,
-        gate_state: gateConnectedRef.current ? (gateOpened ? "open" : "unconfirmed") : null,
-        device_timestamp: new Date().toISOString(),
-      }).catch((err) => console.warn("[Kiosk] Log write failed:", err));
+      if (!isRepeatGrant) {
+        await addLog({
+          person_id: match.person!.id,
+          person_name: match.person!.name,
+          person_type: "student",
+          direction: "entry",
+          method: "face",
+          success: true,
+          confidence: match.confidence,
+          uniform_ok: uniformCheck?.ok ?? null,
+          failure_reason: uniformCheck
+            ? `Uniform verified — ${uniformCheck.detail}`
+            : "Granted — uniform check disabled in settings",
+          gate_state: gateStateForLog({
+            gateConnected: gateConnectedNow,
+            confirmed: gateConfirmed,
+          }),
+          device_timestamp: new Date().toISOString(),
+        }).catch((err) => console.warn("[Kiosk] Log write failed:", err));
+      }
 
       // Update stats
       refreshStats();
 
+      // Release the barrier when its configured open window elapses.
+      if (gateConnectedNow) {
+        setTimeout(() => {
+          closeGate().catch((err) => console.warn("[Kiosk] Gate close failed:", err));
+        }, gateOpenMs);
+      }
+
       // Cooldown before next scan
-      scanCooldown.current = true;
       setTimeout(() => {
         setKioskState("ready");
         setStatusMessage("Ready");
         setLastMatch(null);
         setLastUniform(null);
-        setGateState(null);
-        scanCooldown.current = false;
-
-        // Close gate after delay
-        if (gateConnectedRef.current) {
-          closeGate().catch((err) => console.warn("[Kiosk] Gate close failed:", err));
+        // The barrier banner outlives the verdict card when the configured
+        // open window is longer than the card hold — clear it only once the
+        // window has actually elapsed (the countdown effect handles the rest).
+        if (gateBannerUntilRef.current === 0 || Date.now() >= gateBannerUntilRef.current) {
+          setGateState(null);
+          setGateSecondsLeft(null);
         }
-      }, 5000);
+        scanCooldown.current = false;
+      }, VERDICT_HOLD_MS);
     } else if (match.matched && uniformCheck && !uniformCheck.ok) {
       // Denied due to uniform — policy feedback only, no personal data
       setKioskState("denied");
       playCue("deny");
       setStatusMessage(uniformCheck.detail);
 
-      await addLog({
-        person_id: match.person!.id,
-        person_name: match.person!.name,
-        person_type: "student",
-        direction: "entry",
-        method: "face",
-        success: false,
-        confidence: match.confidence,
-        uniform_ok: false,
-        failure_reason: uniformCheck.detail,
-        device_timestamp: new Date().toISOString(),
-      }).catch((err) => console.warn("[Kiosk] Log write failed:", err));
+      // Same duplicate guard as a grant: a failed uniform check must not be
+      // re-logged every few seconds while the student stands there.
+      rearmedRef.current = false;
+      const deniedAt = Date.now();
+      const isRepeatDenial = isRepeatDecision({
+        lastDecisionAt: lastDecisionByPersonRef.current.get(match.person!.id) ?? 0,
+        now: deniedAt,
+      });
+      if (!isRepeatDenial) lastDecisionByPersonRef.current.set(match.person!.id, deniedAt);
+      rememberDecision(match.person!.name, false);
+      setHoldNotice({
+        kind: "denied",
+        name: match.person!.name,
+        at: deniedAt,
+        detail: uniformCheck.detail,
+      });
+
+      if (!isRepeatDenial) {
+        await addLog({
+          person_id: match.person!.id,
+          person_name: match.person!.name,
+          person_type: "student",
+          direction: "entry",
+          method: "face",
+          success: false,
+          confidence: match.confidence,
+          uniform_ok: false,
+          failure_reason: uniformCheck.detail,
+          device_timestamp: new Date().toISOString(),
+        }).catch((err) => console.warn("[Kiosk] Log write failed:", err));
+      }
 
       refreshStats();
 
@@ -761,9 +958,17 @@ export default function KioskPage() {
       // Unknown face — soft throttled beep, no voice (never talk to strangers)
       setKioskState("ready");
       setStatusMessage("Scanning...");
+      // Only cue once the read has settled — no beep at someone who is still
+      // walking up and is about to match.
       const decision = shouldPlayBeep(lastUnknownBeepRef.current, Date.now());
       lastUnknownBeepRef.current = decision.lastPlayedAt;
-      if (decision.play) playCue("unknown");
+      if (settledUnknown && decision.play) playCue("unknown");
+      // Deliberately no audit row here. access_logs records identified
+      // students — granted, or denied for uniform — and nothing else; an
+      // unreadable face is not an access attempt by a known identity. This
+      // branch must also never touch the re-arm lock: an unknown face is not
+      // a decision, and locking here deadlocked the scanner (the person could
+      // never be re-scored into a match).
     }
   }
 
@@ -1269,6 +1474,16 @@ export default function KioskPage() {
         }
       }
 
+      // Gate open window — the dashboard has always written this row, but the
+      // kiosk never read it and hardcoded 5s instead.
+      const gateDuration = settings.find((s) => s.key === "gate_open_duration");
+      if (gateDuration) {
+        const parsed = parseFloat(gateDuration.value);
+        if (!isNaN(parsed) && parsed > 0) {
+          settingsRef.current.gateOpenDuration = parsed;
+        }
+      }
+
       // Branding + voice school from synced settings
       const rawName = settings.find((s) => s.key === "school_name")?.value ?? "";
       const initials = settings.find((s) => s.key === "school_initials")?.value ?? "";
@@ -1348,6 +1563,50 @@ export default function KioskPage() {
     const verifying = kioskState === "ready" || kioskState === "scanning";
     if (!verifying) return null;
 
+    // ─── Already decided ──────────────────────────────────
+    // A grant or a denial locks the scanner until the gate area clears, so
+    // there is nothing to report as "working". Say what actually happened and
+    // what to do next, instead of spinning a step that will not resolve.
+    if (holdNotice) {
+      // Inside the cooldown the decision still stands; past it the person would
+      // need a fresh scan, which needs them to leave the frame anyway.
+      const stillCounts = Date.now() - holdNotice.at < NOTICE_WINDOW_MS;
+      const at = new Date(holdNotice.at).toLocaleTimeString([], {
+        hour: "numeric",
+        minute: "2-digit",
+      });
+
+      if (holdNotice.kind === "granted" && stillCounts) {
+        return {
+          face: "ok" as StepVisual,
+          identity: "ok" as StepVisual,
+          uniform: (lastUniform ? (lastUniform.ok ? "ok" : "fail") : "idle") as StepVisual,
+          title: "You are already recorded — proceed to the gate",
+          hint: `${holdNotice.name} passed at ${at}. Verified once — there is no need to scan again.`,
+        };
+      }
+
+      if (holdNotice.kind === "denied" && stillCounts) {
+        return {
+          face: "ok" as StepVisual,
+          identity: "ok" as StepVisual,
+          uniform: "fail" as StepVisual,
+          title: "Access denied — step away, then try again",
+          hint:
+            holdNotice.detail ??
+            "The uniform did not match your course. Step out of the oval and back in to re-scan.",
+        };
+      }
+
+      return {
+        face: "ok" as StepVisual,
+        identity: "ok" as StepVisual,
+        uniform: "idle" as StepVisual,
+        title: "Step out of the oval to scan the next student",
+        hint: "The last visitor has been handled — the terminal re-arms when the frame is clear.",
+      };
+    }
+
     const matched = lastMatch?.matched ?? false;
     const uniformOk = lastUniform?.ok ?? null;
 
@@ -1383,7 +1642,9 @@ export default function KioskPage() {
     // Once the uniform verdict lands, show exactly what the model saw.
     if (lastUniform && lastUniform.detail) {
       hint = lastUniform.detail;
-    } else if (!matched && lastMatch && scanStep !== "searching") {
+    } else if (!matched && lastMatch && scanStep === "done") {
+      // Only once the read has settled — mid-scan frames score far below the
+      // person's real similarity and the number would look alarming.
       // Surface the real similarity score — it is the difference between
       // "the terminal is broken" and "nobody is enrolled yet", and it is the
       // number you tune with Face Match Threshold.
@@ -1911,10 +2172,40 @@ export default function KioskPage() {
                   </span>
                 </div>
               )}
-              {gateState === "OPEN" && (
-                <div className="mt-3.5 flex items-center gap-3 text-sm sm:text-base font-black text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-2xl px-4 py-3">
-                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
-                  <span>Turnstile Barrier OPEN — Please proceed</span>
+              {gateState && (
+                <div
+                  className={`mt-3.5 flex items-center justify-between gap-3 text-sm sm:text-base font-black border rounded-2xl px-4 py-3 ${
+                    gateState === "OPEN"
+                      ? "text-emerald-800 bg-emerald-50 border-emerald-200"
+                      : gateState === "AWAITING"
+                        ? "text-amber-800 bg-amber-50 border-amber-200"
+                        : "text-surface-700 bg-surface-100 border-surface-200"
+                  }`}
+                >
+                  <span className="flex items-center gap-3 min-w-0">
+                    <span
+                      className={`w-2.5 h-2.5 shrink-0 rounded-full ${
+                        gateState === "OPEN" ? "bg-emerald-500 animate-ping" : "bg-amber-500"
+                      }`}
+                    />
+                    <span className="truncate">
+                      {gateState === "OPEN"
+                        ? "Turnstile Barrier OPEN — please proceed"
+                        : gateState === "AWAITING"
+                          ? "Gate command sent — awaiting controller confirmation"
+                          : "Gate command sent — no controller linked"}
+                    </span>
+                  </span>
+                  <span className="flex items-center gap-2 shrink-0">
+                    {gateSecondsLeft !== null && gateSecondsLeft > 0 && (
+                      <span className="font-mono text-xs opacity-80">{gateSecondsLeft}s</span>
+                    )}
+                    {gateState === "SENT" && (
+                      <span className="px-2 py-0.5 rounded-md text-[10px] font-black tracking-widest bg-surface-200 text-surface-600">
+                        DEMO
+                      </span>
+                    )}
+                  </span>
                 </div>
               )}
             </div>
@@ -1937,6 +2228,72 @@ export default function KioskPage() {
           ) : null}
         </div>
       </div>
+
+      {/* ─── Last result strip ───────────────────────────── */}
+      {/* The verdict card clears after a few seconds, which left the screen with
+          no trace of what just happened. This keeps the latest decision visible
+          while the student walks on, then clears itself. */}
+      {lastDecision && !holdNotice && kioskState !== "granted" && kioskState !== "denied" && (
+        <div className="absolute left-6 sm:left-10 bottom-6 z-30 pointer-events-none flex items-center gap-2 rounded-lg bg-white/60 backdrop-blur-md px-3 py-1.5 shadow-sm border border-white/40">
+          <span className="text-[10px] font-black tracking-widest text-surface-500 uppercase">
+            Last
+          </span>
+          <span className="text-[13px] font-bold text-surface-900">{lastDecision.name}</span>
+          <span
+            className={`text-[11px] font-mono font-bold ${
+              lastDecision.granted ? "text-emerald-700" : "text-rose-600"
+            }`}
+          >
+            {lastDecision.granted ? "GRANTED" : "DENIED"}
+          </span>
+          <span className="text-[11px] font-mono text-surface-500">
+            {new Date(lastDecision.at).toLocaleTimeString([], {
+              hour: "numeric",
+              minute: "2-digit",
+            })}
+          </span>
+        </div>
+      )}
+
+      {/* ─── Floating gate banner ──────────────────── */}
+      {/* The verdict card clears after 8s, but a real barrier stays open for
+          its configured window — the banner must live exactly as long. */}
+      {gateState && kioskState !== "granted" && kioskState !== "denied" && (
+        <div
+          className={`absolute left-1/2 -translate-x-1/2 top-6 z-30 pointer-events-none flex items-center justify-between gap-3 rounded-2xl border px-4 py-2.5 shadow-lg backdrop-blur-md text-sm font-black ${
+            gateState === "OPEN"
+              ? "text-emerald-800 bg-emerald-50/90 border-emerald-200"
+              : gateState === "AWAITING"
+                ? "text-amber-800 bg-amber-50/90 border-amber-200"
+                : "text-surface-700 bg-white/80 border-surface-200"
+          }`}
+        >
+          <span className="flex items-center gap-3 min-w-0">
+            <span
+              className={`w-2.5 h-2.5 shrink-0 rounded-full ${
+                gateState === "OPEN" ? "bg-emerald-500 animate-ping" : "bg-amber-500"
+              }`}
+            />
+            <span className="truncate">
+              {gateState === "OPEN"
+                ? "Turnstile Barrier OPEN — please proceed"
+                : gateState === "AWAITING"
+                  ? "Gate command sent — awaiting controller confirmation"
+                  : "Gate command sent — no controller linked"}
+            </span>
+          </span>
+          <span className="flex items-center gap-2 shrink-0">
+            {gateSecondsLeft !== null && gateSecondsLeft > 0 && (
+              <span className="font-mono text-xs opacity-80">{gateSecondsLeft}s</span>
+            )}
+            {gateState === "SENT" && (
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-black tracking-widest bg-surface-200 text-surface-600">
+                DEMO
+              </span>
+            )}
+          </span>
+        </div>
+      )}
 
       {/* ─── Operator Panel ──────────────────────────────── */}
       {showAdminPanel && (
