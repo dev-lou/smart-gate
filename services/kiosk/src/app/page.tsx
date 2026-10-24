@@ -19,6 +19,7 @@ import {
   initUniformDetector,
   cleanupUniformDetector,
   isYoloModelLoaded,
+  torsoRegion,
   type UniformCheckResult,
 } from "@/lib/uniform";
 import {
@@ -36,6 +37,7 @@ import {
 import {
   LAST_RESULT_HOLD_MS,
   NOTICE_WINDOW_MS,
+  NOTICE_ABSENCE_CLEAR_MS,
   VERDICT_HOLD_MS,
   clampGateWindow,
   gateStateForLog,
@@ -43,6 +45,7 @@ import {
   isSettledUnknown,
   nextPresence,
   resolveGateOutcome,
+  shouldDecide,
 } from "@/lib/scanPolicy";
 import {
   getEnrolledFaces,
@@ -121,6 +124,9 @@ type StepVisual = "idle" | "working" | "ok" | "fail";
  */
 const RECOGNIZE_INTERVAL_MS = 500;
 
+/** How long to wait for the camera before booting into hardware test mode. */
+const CAMERA_START_TIMEOUT_MS = 12000;
+
 /** How long a detected face keeps its reticle before it is considered gone. */
 const FACE_RETICLE_HOLD_MS = 1200;
 
@@ -152,6 +158,16 @@ function coverContentBox(video: HTMLVideoElement) {
     width,
     height,
   };
+}
+
+/**
+ * The gate banner speaks only about a *decision* outcome (opened / awaiting a
+ * controller / sent with none linked). Live controller broadcasts (IDLE,
+ * OPENING, CLOSING) arrive on the same state and would otherwise render as
+ * "no controller linked" while the gate is perfectly linked.
+ */
+function isDecisionGateBanner(state: string | null): boolean {
+  return state === "OPEN" || state === "AWAITING" || state === "SENT";
 }
 
 /** Keep the overlay canvas pinned to the video's painted content box. */
@@ -339,6 +355,7 @@ export default function KioskPage() {
     kind: "granted" | "denied";
     name: string;
     at: number;
+    personId?: string;
     detail?: string;
   } | null>(null);
   const [syncStatus, setSyncStatus] = useState<string>("");
@@ -348,6 +365,15 @@ export default function KioskPage() {
   const [started, setStarted] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
+  /** Camera never came up (no webcam / permission denied). The terminal keeps
+   *  running so the gate, servo and button can still be tested. */
+  const [cameraDown, setCameraDown] = useState(false);
+  /** Result of the last servo / ESP32 self-test, shown in the operator panel. */
+  const [hwTest, setHwTest] = useState<{
+    running: boolean;
+    ok: boolean | null;
+    result: string | null;
+  }>({ running: false, ok: null, result: null });
   const [voiceOn, setVoiceOn] = useState(true);
   const [currentTime, setCurrentTime] = useState("");
 
@@ -410,7 +436,6 @@ export default function KioskPage() {
   });
   const fpsRef = useRef(0);
   const lastFpsTime = useRef(Date.now());
-  const scanCooldown = useRef(false);
   const lastMatchRef = useRef<MatchResult | null>(null);
   // Detection snapshot for the overlay: the loop draws every animation frame
   // (so the guide animates) while inference only runs every 3rd frame.
@@ -423,16 +448,29 @@ export default function KioskPage() {
   const gateCleanupRef = useRef<(() => void) | null>(null); // Fix #3: Gate listener cleanup
   const lastSyncRef = useRef<string | null>(null); // For heartbeat reporting
   const lastUnknownBeepRef = useRef(0); // Throttle for unknown-face beep
+  /** Bumped on every decision; verdict-card timers verify they still own the
+   *  screen before resetting shared UI state (identity-aware decisions can
+   *  overlap the previous card's hold window). */
+  const decisionSeqRef = useRef(0);
 
   // ─── Re-arm / duplicate guards ──────────────────────────
   // `faceFreeSinceRef` is when the gate area last became empty (0 while someone
-  // is in frame). `rearmedRef` stays false from the moment a decision is logged
-  // until the frame has been empty long enough — that is what stops a lingering
-  // student from being logged again and again.
+  // is in frame) — it tracks "real absence" (≥ REARM_ABSENCE_MS) so a blink or
+  // one dropped detection frame never reads as "the student left". Decisions
+  // are gated per-IDENTITY in processFace (shouldDecide), not by a global
+  // lock, so a new arrival is decided immediately even while the previous
+  // student's "already recorded" notice is still on screen.
   const faceFreeSinceRef = useRef(0);
-  const rearmedRef = useRef(true);
-  /** Last decision timestamp per person_id — enforces the per-person cooldown. */
-  const lastDecisionByPersonRef = useRef<Map<string, number>>(new Map());
+  /** True while a real absence has separated the frame from the last decision. */
+  const frameClearedRef = useRef(false);
+  /**
+   * Last decision per person_id — enforces the per-person window. Carries the
+   * kind as well as the time: a GRANTED person returning inside the window is
+   * told "already recorded" without a re-scan, while a DENIED person must be
+   * re-checked (they may have fixed their uniform), with repeat denials still
+   * kept out of the log by the denial-side guard.
+   */
+  const lastDecisionByPersonRef = useRef<Map<string, { at: number; granted: boolean }>>(new Map());
   /** When the current face first measured below the match threshold (0 = none). */
   const unknownSinceRef = useRef(0);
   const lastDecisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -441,6 +479,7 @@ export default function KioskPage() {
     kind: "granted" | "denied";
     name: string;
     at: number;
+    personId?: string;
     detail?: string;
   } | null>(null);
 
@@ -550,19 +589,16 @@ export default function KioskPage() {
         console.warn("Face recognizer not available, running in detection-only mode");
       }
 
-      // 2. Start camera
-      setStatusMessage("Starting camera...");
-      const cameraOk = await startCamera();
-      if (!cameraOk) {
-        setKioskState("error");
-        setStatusMessage("Failed to access camera. Please allow camera permissions.");
-        return;
-      }
-
-      // 3. Initialize Supabase
+      // 2. Hardware first. The gate link, the servo and the physical button
+      //    must work whether or not a webcam exists — hardware testing at the
+      //    bench is a first-class mode, not a fault state.
       initSupabase();
 
-      // 4. Try auto-connect gate (Wi-Fi ESP32 first, USB Arduino fallback)
+      // Subscribe before connecting so the very first "connected" event lands.
+      // 🔴 Fix #3: Store unsubscribe in a ref (not returned — initKiosk is async)
+      gateCleanupRef.current = onGateEvent(handleGateEvent);
+
+      // 3. Try auto-connect gate (Wi-Fi ESP32 first, USB Arduino fallback)
       setStatusMessage("Connecting to gate...");
       if (isGateSupported()) {
         const gateConn = await tryAutoConnect().catch(() => ({
@@ -573,20 +609,25 @@ export default function KioskPage() {
         setGateTransport(gateConn.transport);
       }
 
+      // 4. Start camera — optional. Losing it degrades the terminal to a
+      //    hardware tester instead of stopping everything in a fault screen.
+      setStatusMessage("Starting camera...");
+      const cameraOk = await startCamera();
+      if (!cameraOk) {
+        console.warn("[Kiosk] Camera unavailable — running in hardware test mode");
+        setCameraDown(true);
+      }
+
       // 5. Load enrolled faces from IndexedDB
       await refreshEnrolledFaces();
 
       // 6. Try background sync
       syncInBackground();
 
-      // 7. Start main loop
+      // 7. Start main loop (it idles harmlessly without camera frames)
       setKioskState("ready");
-      setStatusMessage("Ready");
+      setStatusMessage(cameraOk ? "Ready" : "Camera unavailable — hardware test mode");
       startMainLoop();
-
-      // 8. Listen for gate events
-      // 🔴 Fix #3: Store unsubscribe in a ref (not returned — initKiosk is async)
-      gateCleanupRef.current = onGateEvent(handleGateEvent);
 
       // 9. Start health heartbeat (every 60s while online)
       startHeartbeat(sendHeartbeatTick);
@@ -609,7 +650,10 @@ export default function KioskPage() {
       // SOFT frame is fatal: measured on a laboratory test image the dress-code
       // model scores 95% sharp, 57% at 2px of blur, and then flips to an
       // entirely wrong uniform by 3px before detecting nothing at all.
-      const stream = await navigator.mediaDevices.getUserMedia({
+      // A permission prompt the user never answers (or a missing device that
+      // never rejects) must not stall boot forever: hardware testing has to
+      // keep working even when the camera is absent.
+      const cameraRequest = navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 1280 },
           height: { ideal: 720 },
@@ -617,6 +661,23 @@ export default function KioskPage() {
           frameRate: { ideal: 30 },
         },
       });
+
+      let stream: MediaStream;
+      try {
+        stream = await Promise.race([
+          cameraRequest,
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("Camera start timed out")), CAMERA_START_TIMEOUT_MS),
+          ),
+        ]);
+      } catch (err) {
+        // Access may still be granted after we gave up waiting — release it so
+        // the camera indicator does not stay lit.
+        void cameraRequest
+          .then((late) => late.getTracks().forEach((track) => track.stop()))
+          .catch(() => {});
+        throw err;
+      }
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -719,26 +780,65 @@ export default function KioskPage() {
       const detected = lastFacesRef.current;
 
       // ─── Presence tracking (re-arm) ─────────────────────
-      // A decision re-arms only once the frame has been empty for a moment.
-      // Face presence only — no biometrics are computed here.
+      // Tracks whether the gate area has been truly EMPTY since the last
+      // decision (≥ REARM_ABSENCE_MS — a blink or one dropped frame doesn't
+      // count). This no longer blocks the scanner: recognition runs for
+      // whoever is in frame, and the per-IDENTITY decision gate lives inside
+      // processFace, so a brand-new student is decided immediately even while
+      // the previous student's notice is still on screen.
       const presence = nextPresence({
         facePresent: detected.length > 0,
-        state: { faceFreeSince: faceFreeSinceRef.current, rearmed: rearmedRef.current },
+        state: { faceFreeSince: faceFreeSinceRef.current, rearmed: frameClearedRef.current },
         now: Date.now(),
       });
       faceFreeSinceRef.current = presence.faceFreeSince;
-      rearmedRef.current = presence.rearmed;
+      frameClearedRef.current = presence.rearmed;
 
-      // The gate area is clear, so the kiosk is available again — retire the
-      // "already recorded" notice so the rail returns to live scanning.
-      if (presence.rearmed && holdNoticeRef.current) setHoldNotice(null);
+      // The decision notice is retired by WHO is on screen now, not just by
+      // the clock. It lives its full one-minute window while its own student
+      // stands there (a momentary step-out does not retract "you are already
+      // recorded"), but clears when: the window elapses, the frame has been
+      // empty a while (that student walked on), or a DIFFERENT live identity
+      // is being read — so a new visitor never faces a stranger's name.
+      if (holdNoticeRef.current) {
+        const notice = holdNoticeRef.current;
+        const expired = Date.now() - notice.at >= NOTICE_WINDOW_MS;
+        const studentWalkedOn =
+          detected.length === 0 &&
+          faceFreeSinceRef.current !== 0 &&
+          Date.now() - faceFreeSinceRef.current >= NOTICE_ABSENCE_CLEAR_MS;
+        const liveMatch = lastMatchRef.current;
+        const someoneElse =
+          notice.personId != null &&
+          liveMatch?.person != null &&
+          liveMatch.person.id !== notice.personId;
+        const strangerSettled =
+          notice.personId != null &&
+          liveMatch != null &&
+          !liveMatch.matched &&
+          isSettledUnknown({
+            matched: false,
+            firstSeenAt: unknownSinceRef.current,
+            now: Date.now(),
+          });
+        // Past its window the notice may only retire once nobody is standing
+        // there — a student who never leaves keeps an honest "recorded" on
+        // screen instead of a contradiction.
+        if ((expired && detected.length === 0) || studentWalkedOn || someoneElse || strangerSettled)
+          setHoldNotice(null);
+      }
 
       if (
         detected.length > 0 &&
         !processingRef.current &&
-        !scanCooldown.current &&
-        rearmedRef.current &&
-        (kioskStateRef.current === "ready" || kioskStateRef.current === "scanning") &&
+        // Recognition runs through the verdict card too — a new arrival must
+        // not wait out the previous student's 8s card before being read. The
+        // loop's early return already excludes the error state; these drop
+        // the pre-ready boot states and the offline splash.
+        (kioskStateRef.current === "ready" ||
+          kioskStateRef.current === "scanning" ||
+          kioskStateRef.current === "granted" ||
+          kioskStateRef.current === "denied") &&
         Date.now() - lastRecognizedAtRef.current >= RECOGNIZE_INTERVAL_MS
       ) {
         lastRecognizedAtRef.current = Date.now();
@@ -798,6 +898,47 @@ export default function KioskPage() {
     // either we are about to read the uniform or this face is unknown.
     setScanStep(match.matched ? "uniform" : settledUnknown ? "done" : "face");
 
+    // ─── Per-identity decision gate ─────────────────────
+    // Recognition always runs (the HUD and identity phase above track whoever
+    // is in frame); THIS decides whether the person in frame may go through
+    // the full decision pipeline (uniform → verdict → log → gate). The prior
+    // decision is looked up FOR THE IDENTITY IN FRAME: a brand-new student
+    // has none and is decided immediately — even while the previous
+    // student's "already recorded" notice is still up — while the same
+    // student lingering at the gate is decided once per stay.
+    if (
+      !shouldDecide({
+        lastDecisionAt: match.person
+          ? (lastDecisionByPersonRef.current.get(match.person.id)?.at ?? 0)
+          : 0,
+        frameEmptySinceLastDecision: frameClearedRef.current,
+        now: Date.now(),
+      })
+    ) {
+      return;
+    }
+
+    // Already recorded — the whole point of the one-minute window. A person
+    // returning inside it (dart out for 5s, tie a shoelace, step back) is
+    // shown the "proceed to the gate" notice again, anchored to their ORIGINAL
+    // decision time, and the full grant sequence never runs: no second card,
+    // no gate command, no second access row. Only a fresh arrival after the
+    // window (afternoon class) earns a new scan. This suppression is keyed to
+    // the person IN FRAME, so it never blocks a different student.
+    if (match.matched && match.person) {
+      const prev = lastDecisionByPersonRef.current.get(match.person.id);
+      if (prev?.granted && isRepeatDecision({ lastDecisionAt: prev.at, now: Date.now() })) {
+        setLastUniform(null);
+        setHoldNotice({
+          kind: "granted",
+          name: match.person.name,
+          at: prev.at,
+          personId: match.person.id,
+        });
+        return;
+      }
+    }
+
     // Check uniform if matched
     let uniformCheck: UniformCheckResult | null = null;
     if (match.matched && match.person && settingsRef.current.uniformEnabled) {
@@ -810,7 +951,9 @@ export default function KioskPage() {
       match.matched && (!settingsRef.current.uniformEnabled || uniformCheck?.ok === true);
 
     if (accessGranted) {
-      // Grant access
+      // Grant access — the card timer must know it owns the screen (a new
+      // decision can land while this card's hold window is still running).
+      const cardToken = ++decisionSeqRef.current;
       setKioskState("granted");
       playCue("grant");
       setStatusMessage(`Welcome, ${match.person!.name}!`);
@@ -846,17 +989,24 @@ export default function KioskPage() {
       );
 
       // 🛡️ Duplicate guard — a lingering student (or one who steps out and
-      // straight back in) must not produce a second access row.
-      scanCooldown.current = true;
-      rearmedRef.current = false;
+      // straight back in) must not produce a second access row. The decision
+      // starts a new stay: the "frame cleared" flag resets so this identity
+      // is decided once more only after they genuinely leave again.
+      frameClearedRef.current = false;
       const grantedAt = Date.now();
       const isRepeatGrant = isRepeatDecision({
-        lastDecisionAt: lastDecisionByPersonRef.current.get(match.person!.id) ?? 0,
+        lastDecisionAt: lastDecisionByPersonRef.current.get(match.person!.id)?.at ?? 0,
         now: grantedAt,
       });
-      if (!isRepeatGrant) lastDecisionByPersonRef.current.set(match.person!.id, grantedAt);
+      if (!isRepeatGrant)
+        lastDecisionByPersonRef.current.set(match.person!.id, { at: grantedAt, granted: true });
       rememberDecision(match.person!.name, true);
-      setHoldNotice({ kind: "granted", name: match.person!.name, at: grantedAt });
+      setHoldNotice({
+        kind: "granted",
+        name: match.person!.name,
+        at: grantedAt,
+        personId: match.person!.id,
+      });
 
       // Log access (with gate feedback result)
       if (!isRepeatGrant) {
@@ -890,8 +1040,11 @@ export default function KioskPage() {
         }, gateOpenMs);
       }
 
-      // Cooldown before next scan
+      // Cooldown before next scan — token-guarded: if a NEW decision took
+      // over the screen while this card was holding, this older timer must
+      // not wipe the new verdict.
       setTimeout(() => {
+        if (decisionSeqRef.current !== cardToken) return;
         setKioskState("ready");
         setStatusMessage("Ready");
         setLastMatch(null);
@@ -903,28 +1056,31 @@ export default function KioskPage() {
           setGateState(null);
           setGateSecondsLeft(null);
         }
-        scanCooldown.current = false;
       }, VERDICT_HOLD_MS);
     } else if (match.matched && uniformCheck && !uniformCheck.ok) {
       // Denied due to uniform — policy feedback only, no personal data
+      const cardToken = ++decisionSeqRef.current;
       setKioskState("denied");
       playCue("deny");
       setStatusMessage(uniformCheck.detail);
 
       // Same duplicate guard as a grant: a failed uniform check must not be
-      // re-logged every few seconds while the student stands there.
-      rearmedRef.current = false;
+      // re-logged every few seconds while the student stands there. The
+      // decision starts a new stay for this identity.
+      frameClearedRef.current = false;
       const deniedAt = Date.now();
       const isRepeatDenial = isRepeatDecision({
-        lastDecisionAt: lastDecisionByPersonRef.current.get(match.person!.id) ?? 0,
+        lastDecisionAt: lastDecisionByPersonRef.current.get(match.person!.id)?.at ?? 0,
         now: deniedAt,
       });
-      if (!isRepeatDenial) lastDecisionByPersonRef.current.set(match.person!.id, deniedAt);
+      if (!isRepeatDenial)
+        lastDecisionByPersonRef.current.set(match.person!.id, { at: deniedAt, granted: false });
       rememberDecision(match.person!.name, false);
       setHoldNotice({
         kind: "denied",
         name: match.person!.name,
         at: deniedAt,
+        personId: match.person!.id,
         detail: uniformCheck.detail,
       });
 
@@ -945,8 +1101,9 @@ export default function KioskPage() {
 
       refreshStats();
 
-      // Reset after a moment
+      // Reset after a moment — token-guarded like the grant card.
       setTimeout(() => {
+        if (decisionSeqRef.current !== cardToken) return;
         if (kioskStateRef.current === "denied") {
           setKioskState("ready");
           setStatusMessage("Ready");
@@ -1103,8 +1260,43 @@ export default function KioskPage() {
       }
     }
 
+    // ── 2b. Torso scan band: the region actually fed to YOLO ──
+    // checkUniform() crops this band under the chin and letterboxes it to
+    // 640x640. Drawing it faintly answers "what is the uniform AI looking
+    // at?" and shows the student where to hold their torso in frame.
+    if (verifying && faces.length > 0) {
+      const biggest = faces.reduce((a, b) =>
+        a.bbox[2] * a.bbox[3] > b.bbox[2] * b.bbox[3] ? a : b,
+      );
+      const band = torsoRegion(biggest.bbox, { videoWidth: W, videoHeight: H });
+      const tx = Math.max(0, Math.min(W - 1, band.x));
+      const ty = Math.max(0, Math.min(H - 1, band.y));
+      const tw = Math.max(1, Math.min(W - tx, band.width));
+      const th = Math.max(1, Math.min(H - ty, band.height));
+      if (tw > 4 && th > 4) {
+        ctx.save();
+        ctx.setLineDash([unit * 1.1, unit * 1.1]);
+        ctx.strokeStyle = "rgba(148, 163, 184, 0.55)";
+        ctx.lineWidth = Math.max(1.5, unit * 0.22);
+        ctx.strokeRect(tx, ty, tw, th);
+        ctx.restore();
+        drawChip(
+          ctx,
+          tx,
+          Math.max(unit * 7, ty - unit * 1.2),
+          "UNIFORM SCAN AREA",
+          "148, 163, 184",
+          "left",
+          Math.max(11, unit * 1.5),
+        );
+      }
+    }
+
     // ── 3. Uniform reticle on the winning YOLO detection ──
-    const uniformBox = verifying ? uniform?.bbox : undefined;
+    // The box survives into the verdict hold so the recorded decision stays
+    // anchored to what the model actually saw.
+    const showVerdict = state === "granted" || state === "denied";
+    const uniformBox = verifying || showVerdict ? uniform?.bbox : undefined;
     if (uniformBox) {
       const [ux, uy, uw, uh] = uniformBox;
       const bx = ux * W;
@@ -1154,7 +1346,9 @@ export default function KioskPage() {
 
   function handleGateEvent(event: GateEvent) {
     if (event.type === "button_press") {
-      // Guard pressed the physical override button
+      // Guard pressed the physical override button — token its card like a
+      // scan decision so a face scan landing during the hold isn't clobbered.
+      const overrideToken = ++decisionSeqRef.current;
       openGate().catch(() => {});
       setKioskState("granted");
       playCue("override");
@@ -1181,6 +1375,7 @@ export default function KioskPage() {
         .catch(() => {});
 
       setTimeout(() => {
+        if (decisionSeqRef.current !== overrideToken) return;
         setKioskState("ready");
         setStatusMessage("Ready");
         setGateState(null);
@@ -1502,6 +1697,98 @@ export default function KioskPage() {
     }
   }
 
+  // ─── Hardware Self-Test (no camera required) ────────────
+
+  /** Poll a predicate until it holds or the deadline passes. */
+  function waitFor(predicate: () => boolean, timeoutMs: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const startedAt = Date.now();
+      const tick = () => {
+        if (predicate()) return resolve(true);
+        if (Date.now() - startedAt > timeoutMs) return resolve(false);
+        setTimeout(tick, 100);
+      };
+      tick();
+    });
+  }
+
+  /** Make sure a controller is linked, retrying once if it is not. */
+  async function ensureGateLinked(): Promise<boolean> {
+    if (gateConnectedRef.current) return true;
+    const conn = await connectToGate().catch(() => ({ connected: false, transport: null }));
+    setGateConnected(conn.connected);
+    setGateTransport(conn.transport);
+    return conn.connected;
+  }
+
+  /**
+   * Bench test for the servo + ESP32. Issues real open/close commands and
+   * watches the controller's own state broadcasts, so a pass means the whole
+   * chain worked: browser → Wi-Fi → ESP32 → servo → state back.
+   */
+  async function runServoSelfTest() {
+    if (hwTest.running) return;
+    const stamp = performance.now();
+
+    try {
+      setHwTest({ running: true, ok: null, result: "Linking to the gate..." });
+      if (!(await ensureGateLinked())) {
+        throw new Error(
+          "no controller linked — join the SmartGate-Gate1 hotspot (or plug in USB) and retry",
+        );
+      }
+
+      setHwTest({ running: true, ok: null, result: "Opening gate..." });
+      await openGate();
+      const opened = await waitFor(
+        () => gateStateRef.current === "OPEN" || gateStateRef.current === "OPENING",
+        4000,
+      );
+      if (!opened) throw new Error("no OPEN state came back — check the servo signal wire");
+
+      setHwTest({ running: true, ok: null, result: "Closing gate..." });
+      await closeGate();
+      const closed = await waitFor(() => gateStateRef.current === "IDLE", 6000);
+      if (!closed) throw new Error("gate never returned to IDLE");
+
+      const ms = Math.round(performance.now() - stamp);
+      setHwTest({ running: false, ok: true, result: `PASS — full open/close cycle in ${ms} ms` });
+    } catch (err) {
+      setHwTest({
+        running: false,
+        ok: false,
+        result: `FAIL — ${err instanceof Error ? err.message : "unknown error"}`,
+      });
+    }
+  }
+
+  /** Single open/close command, for checking one direction at a time. */
+  async function handleTestPulse(action: "open" | "close") {
+    try {
+      if (!(await ensureGateLinked())) {
+        setHwTest({
+          running: false,
+          ok: false,
+          result: "FAIL — no controller linked (hotspot or USB cable)",
+        });
+        return;
+      }
+      if (action === "open") {
+        await openGate();
+        setHwTest({ running: false, ok: true, result: "Open command sent — watch the arm" });
+      } else {
+        await closeGate();
+        setHwTest({ running: false, ok: true, result: "Close command sent — watch the arm" });
+      }
+    } catch (err) {
+      setHwTest({
+        running: false,
+        ok: false,
+        result: `FAIL — ${err instanceof Error ? err.message : "command rejected"}`,
+      });
+    }
+  }
+
   // ─── Connect Gate Button ───────────────────────────────
 
   async function handleConnectGate() {
@@ -1576,6 +1863,8 @@ export default function KioskPage() {
         minute: "2-digit",
       });
 
+      // Within the cooldown the decision still stands for THAT student; the
+      // notice clears by itself once they (or a different visitor) move on.
       if (holdNotice.kind === "granted" && stillCounts) {
         return {
           face: "ok" as StepVisual,
@@ -1598,12 +1887,15 @@ export default function KioskPage() {
         };
       }
 
+      // Past the 60s window with the same student STILL standing there: the
+      // scanner is holding their already-made decision, so say what gets them
+      // a fresh one (a real step-out re-arms their identity).
       return {
         face: "ok" as StepVisual,
         identity: "ok" as StepVisual,
         uniform: "idle" as StepVisual,
-        title: "Step out of the oval to scan the next student",
-        hint: "The last visitor has been handled — the terminal re-arms when the frame is clear.",
+        title: "You are already recorded — step aside to re-scan",
+        hint: `${holdNotice.name} passed at ${at}. Step out of the oval briefly, then step back in to verify again.`,
       };
     }
 
@@ -1907,6 +2199,15 @@ export default function KioskPage() {
         </div>
       </div>
 
+      {cameraDown && (
+        <div className="absolute bottom-6 left-6 sm:left-10 z-40 glass-pill pl-3 pr-4 py-2.5 flex items-center gap-2 bg-amber-50/95 border-amber-200 shadow-sm">
+          <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+          <span className="text-[11px] sm:text-xs font-bold text-amber-800 uppercase tracking-wider">
+            Camera offline — hardware test mode
+          </span>
+        </div>
+      )}
+
       {/* ─── Full-Screen Initialization / Boot Sequence ───────────────────────────── */}
       {kioskState === "loading_models" && (
         <div className="absolute inset-0 z-50 bg-[#f8fafc] flex flex-col justify-between p-6 sm:p-10 lg:p-14 select-none overflow-hidden">
@@ -2172,7 +2473,7 @@ export default function KioskPage() {
                   </span>
                 </div>
               )}
-              {gateState && (
+              {isDecisionGateBanner(gateState) && (
                 <div
                   className={`mt-3.5 flex items-center justify-between gap-3 text-sm sm:text-base font-black border rounded-2xl px-4 py-3 ${
                     gateState === "OPEN"
@@ -2258,7 +2559,7 @@ export default function KioskPage() {
       {/* ─── Floating gate banner ──────────────────── */}
       {/* The verdict card clears after 8s, but a real barrier stays open for
           its configured window — the banner must live exactly as long. */}
-      {gateState && kioskState !== "granted" && kioskState !== "denied" && (
+      {isDecisionGateBanner(gateState) && kioskState !== "granted" && kioskState !== "denied" && (
         <div
           className={`absolute left-1/2 -translate-x-1/2 top-6 z-30 pointer-events-none flex items-center justify-between gap-3 rounded-2xl border px-4 py-2.5 shadow-lg backdrop-blur-md text-sm font-black ${
             gateState === "OPEN"
@@ -2331,6 +2632,12 @@ export default function KioskPage() {
               <span className="font-mono font-bold text-surface-900">{fps}</span>
             </div>
             <div className="flex justify-between">
+              <span className="text-surface-500">Camera</span>
+              <span className={`font-bold ${cameraDown ? "text-amber-600" : "text-green-600"}`}>
+                {cameraDown ? "OFF" : "OK"}
+              </span>
+            </div>
+            <div className="flex justify-between">
               <span className="text-surface-500">Profiles</span>
               <span className="font-mono font-bold text-surface-900">{dbStats.studentCount}</span>
             </div>
@@ -2392,6 +2699,67 @@ export default function KioskPage() {
               {syncStatus}
             </div>
           )}
+
+          {/* Hardware self-test — deliberately camera-free, for bench testing. */}
+          <div className="rounded-xl border border-surface-200 bg-surface-50/70 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-black uppercase tracking-widest text-surface-500">
+                Servo / ESP32 test
+              </span>
+              <span
+                className={`text-[10px] font-black uppercase tracking-widest ${
+                  gateConnected ? "text-green-600" : "text-rose-500"
+                }`}
+              >
+                {gateConnected ? `linked · ${gateTransport === "wifi" ? "wifi" : "usb"}` : "no link"}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => handleTestPulse("open")}
+                disabled={hwTest.running}
+                className="py-2.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-bold hover:bg-emerald-100 disabled:opacity-50 transition-colors cursor-pointer"
+              >
+                Open
+              </button>
+              <button
+                onClick={() => handleTestPulse("close")}
+                disabled={hwTest.running}
+                className="py-2.5 rounded-lg bg-surface-100 text-surface-700 border border-surface-200 text-xs font-bold hover:bg-surface-200 disabled:opacity-50 transition-colors cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+
+            <button
+              onClick={runServoSelfTest}
+              disabled={hwTest.running}
+              className="w-full py-2.5 rounded-lg bg-blue-600 text-white text-[11px] font-black uppercase tracking-wider hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center justify-center gap-2 cursor-pointer"
+            >
+              {hwTest.running ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Cpu className="w-3.5 h-3.5" />
+              )}
+              {hwTest.running ? hwTest.result : "Run self-test"}
+            </button>
+
+            {hwTest.result && !hwTest.running && (
+              <p
+                className={`text-[11px] font-semibold leading-snug ${
+                  hwTest.ok ? "text-emerald-700" : "text-rose-600"
+                }`}
+              >
+                {hwTest.result}
+              </p>
+            )}
+
+            <p className="text-[11px] leading-snug text-surface-500">
+              No camera needed. The GPIO 4 button also opens the gate by itself — tap it to check the
+              ESP32 and servo without this screen.
+            </p>
+          </div>
 
           <div className="space-y-3">
             <button

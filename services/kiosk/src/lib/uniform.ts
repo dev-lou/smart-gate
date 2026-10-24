@@ -254,14 +254,21 @@ export async function checkUniform(
         // family match can authorize. A known course family with a mismatched
         // detected uniform is a clear WRONG UNIFORM denial, not a config error.
         if (expectedClass || expectedFamily !== "") {
+          // Uncertain band: the right course was seen but too faint to
+          // authorize (test-set sweep: conf 0.25 keeps P 0.72 / R 0.75 while
+          // 0.55 collapses recall to 0.57). Tell the student to hold still
+          // instead of accusing them of the wrong uniform.
+          const uncertain = !ok && isMatch;
           return {
             ok,
             confidence: bestDet.confidence,
             detail: ok
               ? `✅ ${detectedLabel} detected (${(bestDet.confidence * 100).toFixed(0)}%)`
-              : expectedFamily !== "" && detectedFamily !== ""
-                ? `❌ Wrong uniform: detected ${detectedLabel}, expected a ${expectedFamily.toUpperCase()} uniform`
-                : `❌ Wrong uniform: detected ${detectedLabel}, expected ${expectedUniform}`,
+              : uncertain
+                ? `⏳ ${detectedLabel} looks right but unclear (${(bestDet.confidence * 100).toFixed(0)}%) — hold still and face the camera`
+                : expectedFamily !== "" && detectedFamily !== ""
+                  ? `❌ Wrong uniform: detected ${detectedLabel}, expected a ${expectedFamily.toUpperCase()} uniform`
+                  : `❌ Wrong uniform: detected ${detectedLabel}, expected ${expectedUniform}`,
             detectedType: detectedLabel,
             classId: bestDet.classId,
             bbox: bestDet.bbox,

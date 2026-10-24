@@ -17,7 +17,7 @@ import { FilesetResolver, FaceDetector, type FaceDetectorResult } from "@mediapi
 export interface FaceResult {
   /** Bounding box [x, y, width, height] as ratio of frame */
   bbox: [number, number, number, number];
-  /** Face embedding vector (128-dim) */
+  /** Face embedding vector (512-dim ArcFace w600k_mbf) */
   embedding?: Float32Array;
   /** Detection confidence */
   confidence: number;

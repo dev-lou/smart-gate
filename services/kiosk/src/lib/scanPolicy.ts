@@ -24,6 +24,11 @@ export const LAST_RESULT_HOLD_MS = 30_000;
  *  visitor whose generation was already logged. */
 export const NOTICE_WINDOW_MS = 60_000;
 
+/** The frame being empty this long takes the decision notice down early —
+ *  its student has clearly walked on. A returning student gets it re-shown
+ *  from the per-person decision map, anchored to the original decision. */
+export const NOTICE_ABSENCE_CLEAR_MS = 10_000;
+
 /** A person must read below threshold this long before the kiosk treats them
  *  as unrecognised — the first frames of a walk-up are mid-motion and measure
  *  far under the person's real similarity (0.26 before settling at 0.63). */
@@ -32,6 +37,12 @@ export const UNKNOWN_DWELL_MS = 2_500;
 /** Per-person repeat suppression: a decision for the same person inside this
  *  window is still shown on screen, but writes no second access row. */
 export const PERSON_COOLDOWN_MS = 60_000;
+
+/** How long a just-decided person is not re-decided at all, even standing
+ *  perfectly still — far shorter than the log-suppression window, and only
+ *  ever applied to the person who was just decided. Everyone else (a new
+ *  arrival stepping in front of the camera) is decided immediately. */
+export const PERSON_REDECIDE_MS = 4_000;
 
 /**
  * How the gate is reported to the student.
@@ -78,6 +89,37 @@ export function nextPresence(args: {
 export function isRepeatDecision(args: { lastDecisionAt: number; now: number }): boolean {
   if (args.lastDecisionAt <= 0) return false;
   return args.now - args.lastDecisionAt < PERSON_COOLDOWN_MS;
+}
+
+/**
+ * Identity-aware decision gate: may the kiosk run a full decision (uniform
+ * check / verdict / log row / gate command) for the face currently in frame?
+ *
+ * Recognition ALWAYS runs — what is gated per-person is the decision. The
+ * caller looks up the prior decision FOR THE IDENTITY IN FRAME (a brand-new
+ * student has none, and is therefore always decided immediately, even while
+ * the previous student's "already recorded" notice is still on screen):
+ *
+ *   • No prior decision for this identity       → decide.
+ *   • Prior decision, frame never cleared since → same stay, one decision.
+ *   • Frame cleared since, inside the short re-decide hold → not yet.
+ *   • Frame cleared since, hold elapsed         → decide (a genuine return
+ *     visit; the per-person cooldown still suppresses a duplicate log row).
+ *
+ * `frameEmptySinceLastDecision` must be true only when the gate area was
+ * empty for a real absence (≥ REARM_ABSENCE_MS) after the prior decision —
+ * a single dropped detection frame does not end a stay.
+ */
+export function shouldDecide(args: {
+  /** When the identity in frame was last decided (0 = never). */
+  lastDecisionAt: number;
+  /** True when a real absence separated the frame from the prior decision. */
+  frameEmptySinceLastDecision: boolean;
+  now: number;
+}): boolean {
+  if (args.lastDecisionAt <= 0) return true;
+  if (!args.frameEmptySinceLastDecision) return false;
+  return args.now - args.lastDecisionAt >= PERSON_REDECIDE_MS;
 }
 
 /** A below-threshold read only counts as "unrecognised" once the low reading

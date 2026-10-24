@@ -699,6 +699,7 @@ describe("isBenignWasmLog", () => {
 
 import {
   PERSON_COOLDOWN_MS,
+  PERSON_REDECIDE_MS,
   REARM_ABSENCE_MS,
   UNKNOWN_DWELL_MS,
   clampGateWindow,
@@ -707,6 +708,7 @@ import {
   isSettledUnknown,
   nextPresence,
   resolveGateOutcome,
+  shouldDecide,
   visitGeneration,
 } from "../scanPolicy";
 
@@ -807,6 +809,110 @@ describe("scan policy — per-person cooldown", () => {
     const morning = new Date("2026-09-12T07:40:00").getTime();
     const afternoon = new Date("2026-09-12T13:10:00").getTime();
     expect(isRepeatDecision({ lastDecisionAt: morning, now: afternoon })).toBe(false);
+  });
+});
+
+describe("scan policy — identity-aware decision gate", () => {
+  // shouldDecide is called with the prior decision FOR THE IDENTITY IN FRAME
+  // (page.tsx looks it up by the matched person id). That lookup is what makes
+  // the two hand-off scenarios behave: a brand-new student has NO entry in
+  // the per-person map, so their lastDecisionAt is 0 and they are decided
+  // immediately — even while the previous student's notice is still up.
+  it("always decides a person with no prior decision (brand-new student)", () => {
+    expect(shouldDecide({ lastDecisionAt: 0, frameEmptySinceLastDecision: false, now: 60_000 })).toBe(
+      true,
+    );
+    // Even one second after a DIFFERENT person was granted — the new arrival
+    // is never blocked by the previous person's state.
+    expect(shouldDecide({ lastDecisionAt: 0, frameEmptySinceLastDecision: false, now: 1_000 })).toBe(
+      true,
+    );
+  });
+
+  it("decides the same person once per stay while they never leave the frame", () => {
+    const grantedAt = 10_000;
+    expect(
+      shouldDecide({
+        lastDecisionAt: grantedAt,
+        frameEmptySinceLastDecision: false,
+        now: grantedAt + 59_000,
+      }),
+    ).toBe(false);
+  });
+
+  it("blocks a fast return until the re-decide hold has passed", () => {
+    const grantedAt = 10_000;
+    // Frame genuinely cleared 2s later, student back within 4s of the grant.
+    expect(
+      shouldDecide({
+        lastDecisionAt: grantedAt,
+        frameEmptySinceLastDecision: true,
+        now: grantedAt + PERSON_REDECIDE_MS - 1,
+      }),
+    ).toBe(false);
+  });
+
+  it("re-decides a genuine return visit after the hold (notice re-shown, log suppressed)", () => {
+    const grantedAt = 10_000;
+    expect(
+      shouldDecide({
+        lastDecisionAt: grantedAt,
+        frameEmptySinceLastDecision: true,
+        now: grantedAt + PERSON_REDECIDE_MS,
+      }),
+    ).toBe(true);
+    // The decision runs, but isRepeatDecision still stops a second log row
+    // for 60s — the student sees "already recorded" again, nothing else.
+    expect(
+      isRepeatDecision({ lastDecisionAt: grantedAt, now: grantedAt + PERSON_REDECIDE_MS }),
+    ).toBe(true);
+  });
+
+  it("full hand-off: student A granted, B steps in seconds later — B is decided", () => {
+    const aGrantedAt = 0;
+    let frame = { faceFreeSince: 0, rearmed: false } as ReturnType<typeof nextPresence>;
+
+    // A stands there granted; scanner holds.
+    frame = nextPresence({ facePresent: true, state: frame, now: aGrantedAt });
+
+    // A leaves; frame clears past the absence window at t=2000.
+    frame = nextPresence({ facePresent: false, state: frame, now: 600 });
+    frame = nextPresence({ facePresent: false, state: frame, now: 600 + REARM_ABSENCE_MS });
+    expect(frame.rearmed).toBe(true);
+
+    // B walks in at t=2200. The prior decision is looked up FOR B — who has
+    // none — so B is decided despite A's 60s window being far from over.
+    const bPriorDecisionAt = 0; // B has no decision on record
+    expect(
+      shouldDecide({
+        lastDecisionAt: bPriorDecisionAt,
+        frameEmptySinceLastDecision: frame.rearmed,
+        now: 2_200,
+      }),
+    ).toBe(true);
+  });
+
+  it("full dart-out: A ducks out 1s and returns — A is NOT re-decided", () => {
+    // Grant at t=5000 (never 0 — 0 is the "no decision yet" sentinel).
+    const aGrantedAt = 5_000;
+    let frame = { faceFreeSince: 0, rearmed: false } as ReturnType<typeof nextPresence>;
+
+    frame = nextPresence({ facePresent: true, state: frame, now: aGrantedAt });
+
+    // Out for ~1s — under REARM_ABSENCE_MS.
+    frame = nextPresence({ facePresent: false, state: frame, now: 6_000 });
+    frame = nextPresence({ facePresent: true, state: frame, now: 6_200 });
+    expect(frame.rearmed).toBe(false);
+
+    // Same person, frame never cleared → no second decision while they stand
+    // there; the "already recorded" notice keeps its original timestamp.
+    expect(
+      shouldDecide({
+        lastDecisionAt: aGrantedAt,
+        frameEmptySinceLastDecision: frame.rearmed,
+        now: 30_000,
+      }),
+    ).toBe(false);
   });
 });
 

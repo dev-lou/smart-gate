@@ -208,6 +208,42 @@ ESP32 DevKit V1:
 4. Status pill shows **Gate: IDLE** with a Wi-Fi icon
 5. No internet, no school Wi-Fi, no USB cable required — works fully offline
 
+**Wi-Fi setup portal** (`http://192.168.4.1/`, open it while joined to the gate's hotspot):
+- **Join a network** — the page scans for nearby Wi-Fi, lists them with signal strength,
+  and takes the SSID + password (type it manually for a hidden network). The gate then
+  joins that router/LAN as a station and reports its IP on the page.
+- **The hotspot stays up in both modes**, so the kiosk always keeps talking to
+  `ws://192.168.4.1:81` — no app change needed after joining a school network.
+- **Gate hotspot** — rename the hotspot or change its password (WPA2, 8+ characters).
+- **Reset** — forget every saved network and return to `SmartGate-Gate1` / `smartgate123`.
+  Same as holding the gate button (GPIO 4) for 10 seconds.
+
+### 7.1b Bench test: servo + ESP32 without a camera
+Use this before wiring the terminal into a full station — it proves the gate chain on its own.
+
+1. **Physical button only (no app at all).** Tap the GPIO 4 button: the ESP32 opens the arm for 5 s and closes it. This path needs no Wi-Fi, no kiosk and no camera — if the arm moves, the servo, its power supply and the common ground are all correct.
+2. **Kiosk without a camera.** The kiosk now boots into *hardware test mode* when the camera is missing or its permission prompt is never answered (12 s timeout). Open the **Operator Panel** (gear icon, top right) and use **Servo / ESP32 test**:
+   - **Open** / **Close** — send a single command and watch the arm
+   - **Run self-test** — drives a full open → close cycle and reports `PASS — full open/close cycle in N ms`, or the exact failure (no link, no OPEN state, never returned to IDLE)
+3. **Reading the result.** `LINKED · WIFI` means the kiosk reached the controller. `NO LINK` means the tablet is not on `SmartGate-Gate1` (or the Wi-Fi board is not powered).
+4. **Driving the servo from a serial monitor** (9600 baud, gate must be idle):
+   - `T` — full sweep 0° → 180° → 0° in 30° steps, one every 0.7 s
+   - `M` — centre the horn (90°)
+   - `+` / `-` — nudge 15° open / closed
+   - `Z` — save the horn's current position as the **open** pose (kept in NVS, survives reboots and reflashes)
+   - `X` — forget the saved pose and go back to the default full throw
+   - `W` — watch the button pin for 120 s and print every raw level change
+   - `P` — scan all 18 free GPIOs for 120 s, so a button wired to the wrong hole is found in one pass
+
+   **Arm travel calibration.** `write(angle)` spreads 0–180° across the attached pulse range (1000–2000 µs), so a gate cycle that opens to 90° only uses *half* the horn's throw — that is why an arm can stop at roughly 45° of real movement. The resting pose is fixed at 0° and the open pose defaults to the full throw, 180°. If the arm bottoms out against its linkage before that, nudge it back with `-` until it just reaches fully open, then press `Z`. The saved value is printed at boot:
+   ```
+   [ESP32] Servo attached on GPIO 13 (closed = 0 deg, open = 180 deg - calibrate with + / - then Z)
+   ```
+
+   If these print the angles but the horn never moves, the ESP32 is generating pulses and the fault is wiring: no servo supply, missing common ground, or the signal wire not on GPIO 13.
+
+> The self-test does not touch face recognition, uniform detection or the database, so it is the fastest way to isolate a hardware fault from a software one.
+
 ### 7.2 Option B (fallback): Arduino Uno over USB
 1. Open `hardware/arduino/smart_gate.ino` in Arduino IDE
 2. Select board: **Arduino Uno**, select port, click **Upload**
