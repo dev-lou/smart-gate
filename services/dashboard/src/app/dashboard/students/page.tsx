@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { useToast } from "@/components/ToastProvider";
@@ -22,6 +22,10 @@ import {
   Camera,
   UserRound,
   PhoneCall,
+  RefreshCw,
+  Upload,
+  Image as ImageIcon,
+  SwitchCamera,
 } from "lucide-react";
 
 interface Student {
@@ -40,6 +44,31 @@ interface Student {
 }
 
 const DEPARTMENTS = ["ALL", "CBMSD", "CICI", "COAG", "Education"];
+
+const EDIT_PHOTO_LABELS = ["Front", "Left 45°", "Right 45°", "Up", "Down"] as const;
+const MAX_EDIT_PHOTOS = 5;
+
+interface EditPhoto {
+  preview: string | null;
+  file: File | null;
+  keptUrl: string | null;
+}
+
+function emptyEditPhotos(): EditPhoto[] {
+  return Array.from({ length: MAX_EDIT_PHOTOS }, () => ({
+    preview: null,
+    file: null,
+    keptUrl: null,
+  }));
+}
+
+function editPhotosFromUrls(urls: string[]): EditPhoto[] {
+  const slots = emptyEditPhotos();
+  urls.slice(0, MAX_EDIT_PHOTOS).forEach((url, i) => {
+    slots[i] = { preview: url, file: null, keptUrl: url };
+  });
+  return slots;
+}
 
 function parsePhotos(photoUrl: string | null): string[] {
   if (!photoUrl) return [];
@@ -92,6 +121,14 @@ export default function StudentsPage() {
     section: "",
   });
   const [editSaving, setEditSaving] = useState(false);
+  const [editPhotos, setEditPhotos] = useState<EditPhoto[]>(emptyEditPhotos);
+  const [editCameraIndex, setEditCameraIndex] = useState<number | null>(null);
+  const editVideoRef = useRef<HTMLVideoElement>(null);
+  const editCanvasRef = useRef<HTMLCanvasElement>(null);
+  const editStreamRef = useRef<MediaStream | null>(null);
+  const editFileInputRef = useRef<HTMLInputElement>(null);
+  const editUploadTargetRef = useRef<number>(0);
+  const editCameraFacingRef = useRef<"user" | "environment">("user");
 
   const loadStudents = useCallback(async () => {
     const supabase = getSupabase();
@@ -171,6 +208,127 @@ export default function StudentsPage() {
       grade: s.grade || "",
       section: s.section || "",
     });
+    setEditPhotos(editPhotosFromUrls(parsePhotos(s.photo_url)));
+    setEditCameraIndex(null);
+  }
+
+  function closeEdit() {
+    editStreamRef.current?.getTracks().forEach((t) => t.stop());
+    editStreamRef.current = null;
+    setEditCameraIndex(null);
+    setEditPhotos((prev) => {
+      prev.forEach((p) => {
+        if (p.file && p.preview) URL.revokeObjectURL(p.preview);
+      });
+      return prev;
+    });
+    setEditing(null);
+  }
+
+  function removeEditPhoto(slotIndex: number) {
+    setEditPhotos((prev) => {
+      const old = prev[slotIndex];
+      if (old.file && old.preview) URL.revokeObjectURL(old.preview);
+      return prev.map((p, i) =>
+        i === slotIndex ? { preview: null, file: null, keptUrl: null } : p,
+      );
+    });
+  }
+
+  function openEditUpload(slotIndex: number) {
+    editUploadTargetRef.current = slotIndex;
+    editFileInputRef.current?.click();
+  }
+
+  function handleEditFileSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      pushToast("error", "Please choose an image file (JPG/PNG)");
+      return;
+    }
+    const slotIndex = editUploadTargetRef.current;
+    setEditPhotos((prev) => {
+      const old = prev[slotIndex];
+      if (old.file && old.preview) URL.revokeObjectURL(old.preview);
+      return prev.map((p, i) =>
+        i === slotIndex ? { preview: URL.createObjectURL(file), file, keptUrl: null } : p,
+      );
+    });
+    event.target.value = "";
+  }
+
+  const startEditCamera = useCallback(
+    async (slotIndex: number, facing: "user" | "environment" = editCameraFacingRef.current) => {
+      try {
+        editStreamRef.current?.getTracks().forEach((t) => t.stop());
+        editStreamRef.current = null;
+        editCameraFacingRef.current = facing;
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 1280, height: 720, facingMode: facing },
+        });
+        editStreamRef.current = stream;
+        if (editVideoRef.current) editVideoRef.current.srcObject = stream;
+        setEditCameraIndex(slotIndex);
+      } catch {
+        pushToast("error", "Camera unavailable — use Upload instead");
+      }
+    },
+    [pushToast],
+  );
+
+  const stopEditCamera = useCallback(() => {
+    editStreamRef.current?.getTracks().forEach((t) => t.stop());
+    editStreamRef.current = null;
+    setEditCameraIndex(null);
+  }, []);
+
+  useEffect(() => {
+    if (editCameraIndex !== null && editVideoRef.current && editStreamRef.current) {
+      editVideoRef.current.srcObject = editStreamRef.current;
+    }
+  }, [editCameraIndex]);
+
+  useEffect(() => {
+    return () => {
+      editStreamRef.current?.getTracks().forEach((t) => t.stop());
+    };
+  }, []);
+
+  function captureEditPhoto() {
+    if (editCameraIndex === null) return;
+    const video = editVideoRef.current;
+    const canvas = editCanvasRef.current;
+    if (!video || !canvas) return;
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.drawImage(video, 0, 0);
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) return;
+        const file = new File(
+          [blob],
+          `edit_${EDIT_PHOTO_LABELS[editCameraIndex].replace(/[^a-z0-9]+/gi, "_").toLowerCase()}_${Date.now()}.jpg`,
+          {
+            type: "image/jpeg",
+          },
+        );
+        const previewUrl = URL.createObjectURL(blob);
+        const slotIndex = editCameraIndex;
+        setEditPhotos((prev) => {
+          const old = prev[slotIndex];
+          if (old.file && old.preview) URL.revokeObjectURL(old.preview);
+          return prev.map((p, i) =>
+            i === slotIndex ? { preview: previewUrl, file, keptUrl: null } : p,
+          );
+        });
+        stopEditCamera();
+      },
+      "image/jpeg",
+      0.85,
+    );
   }
 
   async function saveEdit() {
@@ -179,30 +337,61 @@ export default function StudentsPage() {
       pushToast("error", "Name is required");
       return;
     }
+    const filledPhotos = editPhotos.filter((p) => p.preview !== null);
+    if (filledPhotos.length === 0) {
+      pushToast("error", "Keep at least one photo or add a new one");
+      return;
+    }
     setEditSaving(true);
     const supabase = getSupabase();
-    if (!supabase) return;
-    const { error: err } = await supabase
-      .from("students")
-      .update({
-        name: editForm.name.trim(),
-        student_id: editForm.student_id.trim() || null,
-        department: editForm.department || null,
-        grade: editForm.grade || null,
-        section: editForm.section || null,
-        // The course IS the uniform: the kiosk accepts any uniform of the
-        // course (blazer/female/male all verify a CICI student).
-        uniform_type: editForm.department || "default",
-      })
-      .eq("id", editing.id);
-    if (err) {
-      pushToast("error", err.message);
-    } else {
+    if (!supabase) {
+      setEditSaving(false);
+      return;
+    }
+    try {
+      const timestamp = Date.now();
+      const photoUrls: string[] = [];
+      for (let i = 0; i < editPhotos.length; i++) {
+        const slot = editPhotos[i];
+        if (!slot.preview) continue;
+        if (slot.file) {
+          const photoPath = `enrollments/${timestamp}_${editForm.student_id.trim() || editing.student_id || "edit"}_slot${i + 1}.jpg`;
+          const { error: uploadError } = await supabase.storage
+            .from("student-photos")
+            .upload(photoPath, slot.file);
+          if (uploadError) throw uploadError;
+          const { data: urlData } = supabase.storage.from("student-photos").getPublicUrl(photoPath);
+          photoUrls.push(urlData?.publicUrl || photoPath);
+        } else if (slot.keptUrl) {
+          photoUrls.push(slot.keptUrl);
+        }
+      }
+      const { error: err } = await supabase
+        .from("students")
+        .update({
+          name: editForm.name.trim(),
+          student_id: editForm.student_id.trim() || null,
+          department: editForm.department || null,
+          grade: editForm.grade || null,
+          section: editForm.section || null,
+          // The course IS the uniform: the kiosk accepts any uniform of the
+          // course (blazer/female/male all verify a CICI student).
+          uniform_type: editForm.department || "default",
+          photo_url: JSON.stringify(photoUrls),
+        })
+        .eq("id", editing.id);
+      if (err) throw err;
       pushToast("success", `${editForm.name} updated`);
+      editStreamRef.current?.getTracks().forEach((t) => t.stop());
+      editStreamRef.current = null;
+      setEditCameraIndex(null);
       setEditing(null);
       void loadStudents();
+    } catch (err) {
+      pushToast("error", err instanceof Error ? err.message : "Failed to save changes");
+    } finally {
+      setEditSaving(false);
     }
-    setEditSaving(false);
   }
 
   // ─── Filtering ──────────────────────────────────────
@@ -475,7 +664,7 @@ export default function StudentsPage() {
                   Enrollment Photos ({parsePhotos(viewing.photo_url).length})
                 </h3>
                 {parsePhotos(viewing.photo_url).length > 0 ? (
-                  <div className="grid grid-cols-3 gap-3">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
                     {parsePhotos(viewing.photo_url).map((p, i) => (
                       <img
                         key={i}
@@ -583,18 +772,75 @@ export default function StudentsPage() {
       {/* ─── Edit modal ─── */}
       {editing && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <canvas ref={editCanvasRef} className="hidden" />
+          <input
+            ref={editFileInputRef}
+            type="file"
+            accept="image/*"
+            onChange={handleEditFileSelected}
+            className="hidden"
+          />
+          {editCameraIndex !== null && (
+            <div className="fixed inset-0 z-[60] bg-black">
+              <video
+                ref={editVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className="w-full h-full object-cover"
+              />
+              <div className="absolute top-0 inset-x-0 p-6 pb-16 bg-gradient-to-b from-black/80 to-transparent text-center pointer-events-none">
+                <p className="text-white text-lg sm:text-2xl font-bold drop-shadow">
+                  Retake — {EDIT_PHOTO_LABELS[editCameraIndex]}
+                </p>
+                <p className="text-white/70 text-sm mt-1 drop-shadow">
+                  Align the face, then capture
+                </p>
+              </div>
+              <div className="absolute bottom-0 inset-x-0 p-8 pt-16 bg-gradient-to-t from-black/80 to-transparent">
+                <div className="flex items-end justify-center gap-6">
+                  <button
+                    onClick={stopEditCamera}
+                    className="px-6 py-3 bg-white/10 hover:bg-white/20 backdrop-blur border border-white/30 text-white rounded-full transition-colors flex items-center gap-2 cursor-pointer"
+                  >
+                    <X className="w-5 h-5" />
+                    Cancel
+                  </button>
+                  <button
+                    onClick={captureEditPhoto}
+                    className="w-20 h-20 rounded-full border-4 border-white bg-white/20 backdrop-blur hover:bg-white/30 transition-all flex items-center justify-center cursor-pointer"
+                    aria-label="Capture photo"
+                  >
+                    <span className="w-14 h-14 rounded-full bg-white shadow-lg" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (editCameraIndex === null) return;
+                      const next = editCameraFacingRef.current === "user" ? "environment" : "user";
+                      void startEditCamera(editCameraIndex, next);
+                    }}
+                    className="px-5 py-3 bg-white/10 hover:bg-white/20 backdrop-blur border border-white/30 text-white rounded-full transition-colors flex items-center gap-2 cursor-pointer"
+                    aria-label="Switch camera"
+                  >
+                    <SwitchCamera className="w-5 h-5" />
+                    Flip
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           <div
             className="absolute inset-0 bg-surface-900/40 backdrop-blur-sm"
-            onClick={() => setEditing(null)}
+            onClick={closeEdit}
           />
-          <div className="relative w-full max-w-lg max-h-[90vh] bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col">
+          <div className="relative w-full max-w-2xl max-h-[90vh] bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col">
             <div className="p-6 border-b border-surface-100 flex items-center justify-between">
               <h2 className="text-xl font-bold text-surface-900 flex items-center gap-2">
                 <Pencil className="w-5 h-5 text-primary-500" />
                 Edit Student
               </h2>
               <button
-                onClick={() => setEditing(null)}
+                onClick={closeEdit}
                 className="p-2 hover:bg-surface-100 rounded-full transition-colors text-surface-500 cursor-pointer"
               >
                 <X className="w-5 h-5" />
@@ -679,11 +925,114 @@ export default function StudentsPage() {
                   Uniform: any {editForm.department} uniform is accepted automatically at the kiosk
                 </div>
               )}
+
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-bold text-surface-900 flex items-center gap-2">
+                    <Camera className="w-4 h-4 text-primary-500" />
+                    Enrollment Photos ({editPhotos.filter((p) => p.preview).length}/
+                    {MAX_EDIT_PHOTOS})
+                  </h3>
+                  <span className="text-[11px] font-medium text-surface-400">
+                    Retake, replace, or remove — at least 1 required
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                  {editPhotos.map((photo, index) => {
+                    const isFilled = photo.preview !== null;
+                    return (
+                      <div key={index} className="flex flex-col items-center">
+                        <div
+                          className={`w-full aspect-[4/3] rounded-xl border-2 flex items-center justify-center overflow-hidden ${
+                            isFilled
+                              ? "border-green-500/50 bg-green-500/5"
+                              : "border-dashed border-surface-300 bg-surface-50"
+                          }`}
+                        >
+                          {photo.preview ? (
+                            <img
+                              src={photo.preview}
+                              alt={`${EDIT_PHOTO_LABELS[index]} photo`}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="text-center p-2">
+                              <Camera className="w-5 h-5 text-surface-300 mx-auto mb-1" />
+                              <p className="text-surface-500 font-medium text-[11px]">
+                                {EDIT_PHOTO_LABELS[index]}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                        <p className="text-[11px] font-bold text-surface-600 mt-1.5">
+                          {EDIT_PHOTO_LABELS[index]}
+                        </p>
+                        <div className="flex gap-1.5 mt-1.5 flex-wrap justify-center">
+                          {isFilled ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => void startEditCamera(index)}
+                                title="Retake with camera"
+                                className="text-[11px] px-2.5 py-1.5 bg-white border border-surface-200 hover:bg-surface-50 text-surface-700 rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                              >
+                                <RefreshCw className="w-3 h-3" />
+                                Retake
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => openEditUpload(index)}
+                                title="Upload a new photo"
+                                className="text-[11px] px-2.5 py-1.5 bg-white border border-surface-200 hover:bg-surface-50 text-surface-700 rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                              >
+                                {photo.file ? (
+                                  <ImageIcon className="w-3 h-3" />
+                                ) : (
+                                  <Upload className="w-3 h-3" />
+                                )}
+                                {photo.file ? "Replace" : "Upload"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => removeEditPhoto(index)}
+                                title="Remove this photo"
+                                className="text-[11px] px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 font-medium rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                              >
+                                <X className="w-3 h-3" />
+                                Remove
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => void startEditCamera(index)}
+                                className="text-[11px] px-2.5 py-1.5 bg-primary-50 hover:bg-primary-100 text-primary-700 font-medium rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                              >
+                                <Camera className="w-3 h-3" />
+                                Take
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => openEditUpload(index)}
+                                className="text-[11px] px-2.5 py-1.5 bg-white border border-surface-200 hover:bg-surface-50 text-surface-700 rounded-lg transition-colors flex items-center gap-1 cursor-pointer"
+                              >
+                                <ImageIcon className="w-3 h-3" />
+                                Upload
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
 
             <div className="p-6 border-t border-surface-100 flex justify-end gap-2">
               <button
-                onClick={() => setEditing(null)}
+                onClick={closeEdit}
                 className="px-4 py-2.5 bg-white border border-surface-200 hover:bg-surface-50 text-surface-700 rounded-xl text-sm font-bold transition-colors cursor-pointer"
               >
                 Cancel

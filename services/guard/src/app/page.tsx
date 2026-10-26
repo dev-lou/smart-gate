@@ -20,6 +20,8 @@ import {
   ClipboardList,
   ArrowLeft,
   ArrowRight,
+  ArrowUp,
+  ArrowDown,
   Upload,
   SwitchCamera,
   Clock,
@@ -64,7 +66,7 @@ const COURSES: Course[] = [
 const YEARS = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
 const SECTIONS = ["A", "B", "C", "D"];
 
-// 🔴 ACCURACY FIX #4: Define the 3 photo angles for enrollment
+// 5 photo angles for enrollment
 const PHOTO_ANGLES = [
   {
     id: "front",
@@ -86,6 +88,20 @@ const PHOTO_ANGLES = [
     icon: <Camera className="w-6 h-6 text-primary-500" />,
     instruction: "Turn head slightly to the right",
     tip: "About 45-degree angle",
+  },
+  {
+    id: "up",
+    label: "Up",
+    icon: <ArrowUp className="w-6 h-6 text-primary-500" />,
+    instruction: "Tilt your chin slightly up",
+    tip: "Captures from below the chin",
+  },
+  {
+    id: "down",
+    label: "Down",
+    icon: <ArrowDown className="w-6 h-6 text-primary-500" />,
+    instruction: "Tilt your chin slightly down",
+    tip: "Captures from above the forehead",
   },
 ] as const;
 
@@ -1090,7 +1106,7 @@ export default function GuardPage() {
                         Student Photos
                       </h3>
                       <p className="text-xs text-surface-500 mt-0.5">
-                        Capture face photos from 3 angles to ensure high biometric accuracy at the
+                        Capture face photos from 5 angles to ensure high biometric accuracy at the
                         kiosk.
                       </p>
                     </div>
@@ -1105,7 +1121,7 @@ export default function GuardPage() {
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
                     {PHOTO_ANGLES.map((angle, index) => {
                       const slot = photoSlots[index];
                       const isTaken = slot.file !== null;
@@ -1231,7 +1247,7 @@ export default function GuardPage() {
                     <ul className="space-y-2">
                       <li className="flex items-center gap-2 text-sm text-primary-700">
                         <span className="w-1.5 h-1.5 rounded-full bg-primary-500" />
-                        Take <strong className="text-primary-900">3 photos</strong> from different
+                        Take <strong className="text-primary-900">5 photos</strong> from different
                         angles
                       </li>
                       <li className="flex items-center gap-2 text-sm text-primary-700">
@@ -1452,7 +1468,7 @@ export default function GuardPage() {
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-3 gap-4">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
                       {photoSlots.map((slot) => (
                         <div key={slot.angle.id} className="text-center">
                           <div className="w-full aspect-[4/3] rounded-xl border-2 border-surface-200 overflow-hidden bg-surface-50 flex items-center justify-center">
