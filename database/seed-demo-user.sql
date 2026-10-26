@@ -9,9 +9,9 @@
 --   email    : demo@isufst.edu.ph
 --   password : SmartGate2026!
 --
--- The same pair is what the login screens display, and what
--- NEXT_PUBLIC_DEMO_EMAIL / NEXT_PUBLIC_DEMO_PASSWORD hold in each
--- service's .env.local. Change both together if you rename it.
+-- The same pair is hardcoded in both sign-in screens
+-- (services/dashboard/src/app/login/page.tsx and
+-- services/guard/src/app/page.tsx). Change both together if you rename it.
 --
 -- Safe to re-run: an existing account is reset to this password
 -- instead of failing on a duplicate email.
@@ -23,8 +23,8 @@
 -- SECURITY: every signed-in user is a full operator in this schema
 -- ("Authenticated users can manage students/access_logs/settings"),
 -- so this account is admin-equivalent. Do not ship it to a public
--- deployment — clear NEXT_PUBLIC_DEMO_* there and pick a real
--- password, or delete this user when the defense is over.
+-- deployment — remove the hardcoded pair from the two sign-in pages
+-- and pick a real password, or delete this user when the defense is over.
 -- ============================================================
 
 do $$

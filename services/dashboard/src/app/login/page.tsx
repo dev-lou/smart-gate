@@ -5,9 +5,10 @@ import { useRouter } from "next/navigation";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
 import { AlertTriangle, KeyRound, Lock } from "lucide-react";
 
-// Demo operator account shown under the form. Set both values in .env.local.
-const DEMO_EMAIL = process.env.NEXT_PUBLIC_DEMO_EMAIL ?? "";
-const DEMO_PASSWORD = process.env.NEXT_PUBLIC_DEMO_PASSWORD ?? "";
+// Demo operator account shown under the form. Hardcoded on purpose so deployed
+// builds show it with no environment setup (capstone demo account).
+const DEMO_EMAIL = "demo@isufst.edu.ph";
+const DEMO_PASSWORD = "SmartGate2026!";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
