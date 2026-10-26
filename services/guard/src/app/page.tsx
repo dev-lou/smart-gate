@@ -29,7 +29,12 @@ import {
   PhoneCall,
   Home,
   BookOpen,
+  KeyRound,
 } from "lucide-react";
+
+// Demo operator account shown under the sign-in form. Set both values in .env.local.
+const DEMO_EMAIL = process.env.NEXT_PUBLIC_DEMO_EMAIL ?? "";
+const DEMO_PASSWORD = process.env.NEXT_PUBLIC_DEMO_PASSWORD ?? "";
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -754,6 +759,36 @@ export default function GuardPage() {
               {authSubmitting ? "Signing in..." : "Sign In to Guard Station"}
             </button>
           </form>
+
+          {DEMO_EMAIL && DEMO_PASSWORD && (
+            <div className="mt-4 glass-card p-4">
+              <p className="text-[11px] font-semibold uppercase tracking-widest text-surface-400 mb-2 flex items-center gap-1.5">
+                <KeyRound className="w-3.5 h-3.5" />
+                Demo account
+              </p>
+              <dl className="space-y-1.5 text-sm">
+                <div className="flex items-baseline justify-between gap-3">
+                  <dt className="text-surface-500 font-medium">Email</dt>
+                  <dd className="font-mono text-surface-900 text-right break-all">{DEMO_EMAIL}</dd>
+                </div>
+                <div className="flex items-baseline justify-between gap-3">
+                  <dt className="text-surface-500 font-medium">Password</dt>
+                  <dd className="font-mono text-surface-900">{DEMO_PASSWORD}</dd>
+                </div>
+              </dl>
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthEmail(DEMO_EMAIL);
+                  setAuthPassword(DEMO_PASSWORD);
+                  setAuthError("");
+                }}
+                className="mt-3 w-full py-2 text-sm font-bold rounded-lg border border-surface-200 bg-white text-surface-700 hover:bg-surface-50 transition-colors"
+              >
+                Use demo credentials
+              </button>
+            </div>
+          )}
         </div>
       </div>
     );
