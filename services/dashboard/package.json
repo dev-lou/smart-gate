@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "0.10.18",
     "@supabase/supabase-js": "^2.39.0",
     "date-fns": "^3.0.0",
     "lucide-react": "^1.31.0",

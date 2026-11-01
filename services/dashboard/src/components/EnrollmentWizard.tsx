@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from "react";
 import { getSupabase } from "@/lib/supabase";
+import { ensureFaceBoxDetector, detectFaceBoxes, paintFaceBoxOverlay } from "@/lib/faceBox";
 import { useToast } from "./ToastProvider";
 import {
   Camera,
@@ -99,6 +100,8 @@ export default function EnrollmentWizard({ open, onClose, onEnrolled }: Enrollme
   const { pushToast } = useToast();
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  /** Detection-only face-box overlay canvas (visual helper, no recognition). */
+  const faceBoxCanvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadTargetRef = useRef<number>(0);
@@ -127,9 +130,15 @@ export default function EnrollmentWizard({ open, onClose, onEnrolled }: Enrollme
         streamRef.current = null;
 
         cameraFacingRef.current = facing;
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 1280, height: 720, facingMode: facing },
-        });
+        // Timeout: on camera-less devices getUserMedia can hang forever.
+        const stream = await Promise.race([
+          navigator.mediaDevices.getUserMedia({
+            video: { width: 1280, height: 720, facingMode: facing },
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new DOMException("Camera timed out", "TimeoutError")), 10000),
+          ),
+        ]);
         streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -157,6 +166,33 @@ export default function EnrollmentWizard({ open, onClose, onEnrolled }: Enrollme
     if (activeSlotIndex !== null && videoRef.current && streamRef.current) {
       videoRef.current.srcObject = streamRef.current;
     }
+  }, [activeSlotIndex]);
+
+  // Detection-only face box while the camera overlay is open. Never
+  // identifies anyone — only shows whether a face is in frame for capture.
+  useEffect(() => {
+    if (activeSlotIndex === null) return;
+    let alive = true;
+    let raf = 0;
+    void ensureFaceBoxDetector();
+    const tick = () => {
+      if (!alive) return;
+      const video = videoRef.current;
+      const overlay = faceBoxCanvasRef.current;
+      if (video && overlay) {
+        try {
+          paintFaceBoxOverlay(overlay, video, detectFaceBoxes(video));
+        } catch {
+          /* overlay is best-effort — capture still works without it */
+        }
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => {
+      alive = false;
+      cancelAnimationFrame(raf);
+    };
   }, [activeSlotIndex]);
 
   // ─── Upload ───────────────────────────────────────────
@@ -347,6 +383,11 @@ export default function EnrollmentWizard({ open, onClose, onEnrolled }: Enrollme
       {activeSlotIndex !== null && (
         <div className="fixed inset-0 z-[60] bg-black">
           <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+          {/* Detection-only face box (visual helper — no recognition). */}
+          <canvas
+            ref={faceBoxCanvasRef}
+            className="absolute inset-0 w-full h-full pointer-events-none"
+          />
           <div className="absolute top-0 inset-x-0 p-6 pb-16 bg-gradient-to-b from-black/80 to-transparent text-center pointer-events-none">
             <div className="inline-flex items-center gap-2 text-white text-lg sm:text-2xl font-bold drop-shadow">
               {PHOTO_ANGLES[activeSlotIndex].icon}

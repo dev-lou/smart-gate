@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import type { User } from "@supabase/supabase-js";
 import { getSupabase, isSupabaseConfigured } from "@/lib/supabase";
+import { ensureFaceBoxDetector, detectFaceBoxes, paintFaceBoxOverlay } from "@/lib/faceBox";
 import {
   Shield,
-  ShieldCheck,
   Camera,
   Image as ImageIcon,
   CameraIcon,
@@ -63,9 +63,6 @@ const COURSES: Course[] = [
   { value: "Education", label: "Education" },
 ];
 
-const YEARS = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
-const SECTIONS = ["A", "B", "C", "D"];
-
 // 5 photo angles for enrollment
 const PHOTO_ANGLES = [
   {
@@ -118,10 +115,8 @@ interface PhotoSlot {
 
 interface EnrollmentForm {
   name: string;
-  student_id: string;
-  course: string;
-  year: string;
-  section: string;
+  purpose: string;
+  contact: string;
 }
 
 interface SyncStatus {
@@ -138,30 +133,23 @@ function getDepartmentBadge(dept: string): string {
   return "bg-surface-100 text-surface-700 border-surface-200";
 }
 
-function formatUniformLabel(u?: string): string {
-  if (!u || u === "default") return "Standard";
-  return u
-    .replace(/^(cici_|cbmsd_|coag_|edu_|education_)/i, "")
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
 // ─── Component ──────────────────────────────────────────────
 
 export default function GuardPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  /** Overlay canvas for the detection-only face box (visual helper, no recognition). */
+  const faceBoxCanvasRef = useRef<HTMLCanvasElement>(null);
+  const faceBoxRafRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadTargetRef = useRef<number>(0);
   const cameraFacingRef = useRef<"user" | "environment">("user");
 
   const [form, setForm] = useState<EnrollmentForm>({
     name: "",
-    student_id: "",
-    course: "",
-    year: "",
-    section: "",
+    purpose: "",
+    contact: "",
   });
 
   // 🔴 ACCURACY FIX #4: Multiple photo slots instead of single photo
@@ -179,11 +167,10 @@ export default function GuardPage() {
 
   const [syncing, setSyncing] = useState<SyncStatus>({ status: "idle", message: "" });
   const [recentEnrollments, setRecentEnrollments] = useState<
-    Array<{ name: string; course: string; time: string; photos: number; uniform_type?: string }>
+    Array<{ name: string; purpose: string; contact: string; time: string; photos: number }>
   >([]);
   const [currentTime, setCurrentTime] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedDeptFilter, setSelectedDeptFilter] = useState("ALL");
   const [activeTab, setActiveTab] = useState<"home" | "directory" | "uniforms">("home");
 
   useEffect(() => {
@@ -270,9 +257,17 @@ export default function GuardPage() {
         streamRef.current = null;
 
         cameraFacingRef.current = facing;
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 1280, height: 720, facingMode: facing },
-        });
+        // Race the camera request against a timeout: on devices with no
+        // camera (or a denied/hung permission prompt) getUserMedia can hang
+        // forever with zero feedback. Fail loudly so the guard uses Upload.
+        const stream = await Promise.race([
+          navigator.mediaDevices.getUserMedia({
+            video: { width: 1280, height: 720, facingMode: facing },
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new DOMException("Camera timed out", "TimeoutError")), 10000),
+          ),
+        ]);
         // Keep the stream in a ref and mount the overlay; an effect below
         // attaches it to the <video> once it actually exists in the DOM.
         streamRef.current = stream;
@@ -287,9 +282,10 @@ export default function GuardPage() {
         );
       } catch (err) {
         console.error("Camera error:", err);
+        pushToast("error", "Camera unavailable — use Upload instead");
       }
     },
-    [],
+    [pushToast],
   );
 
   const stopCamera = useCallback(() => {
@@ -306,6 +302,33 @@ export default function GuardPage() {
     if (activeSlotIndex !== null && videoRef.current && streamRef.current) {
       videoRef.current.srcObject = streamRef.current;
     }
+  }, [activeSlotIndex]);
+
+  // Detection-only face box while the camera overlay is open. This never
+  // identifies anyone — it only shows whether a face is in frame so the
+  // subject can line up before capture.
+  useEffect(() => {
+    if (activeSlotIndex === null) return;
+    let alive = true;
+    void ensureFaceBoxDetector();
+    const tick = () => {
+      if (!alive) return;
+      const video = videoRef.current;
+      const overlay = faceBoxCanvasRef.current;
+      if (video && overlay) {
+        try {
+          paintFaceBoxOverlay(overlay, video, detectFaceBoxes(video));
+        } catch {
+          /* overlay is best-effort — capture still works without it */
+        }
+      }
+      faceBoxRafRef.current = requestAnimationFrame(tick);
+    };
+    faceBoxRafRef.current = requestAnimationFrame(tick);
+    return () => {
+      alive = false;
+      cancelAnimationFrame(faceBoxRafRef.current);
+    };
   }, [activeSlotIndex]);
 
   // ─── Upload (file picker instead of camera) ──────────
@@ -402,10 +425,8 @@ export default function GuardPage() {
     );
     setForm({
       name: "",
-      student_id: "",
-      course: "",
-      year: "",
-      section: "",
+      purpose: "",
+      contact: "",
     });
     setEnrollStep(1);
   };
@@ -417,11 +438,11 @@ export default function GuardPage() {
   const handleSubmit = async () => {
     // Validation
     if (!form.name.trim()) {
-      pushToast("error", "Student name is required");
+      pushToast("error", "Guest name is required");
       return;
     }
-    if (!form.course) {
-      pushToast("error", "Course is required");
+    if (!form.purpose.trim()) {
+      pushToast("error", "Purpose of visit is required");
       return;
     }
     if (takenPhotos.length === 0) {
@@ -429,7 +450,7 @@ export default function GuardPage() {
       return;
     }
 
-    setSyncing({ status: "syncing", message: "Registering student..." });
+    setSyncing({ status: "syncing", message: "Registering guest..." });
 
     try {
       const supabase = getSupabase();
@@ -446,7 +467,7 @@ export default function GuardPage() {
         const slot = takenPhotos[i];
         if (!slot.file) continue;
 
-        const photoPath = `enrollments/${timestamp}_${form.student_id || "new"}_${slot.angle.id}.jpg`;
+        const photoPath = `guest_enrollments/${timestamp}_guest_${slot.angle.id}.jpg`;
 
         const { error: uploadError } = await supabase.storage
           .from("student-photos")
@@ -462,19 +483,14 @@ export default function GuardPage() {
       // Store all photo URLs as a JSON array in photo_url
       const photoUrlJson = JSON.stringify(photoUrls);
 
-      // 2. Create student record
-      // The course IS the uniform: the kiosk accepts ANY uniform of the
-      // student's course (e.g. CICI blazer/female/male all verify a CICI
-      // student), so we store the course as uniform_type.
-      const { error: insertError } = await supabase.from("students").insert({
+      // 2. Create guest record — personal details only, no course or uniform.
+      // Guests live in their own table (migration 011); the kiosk syncs it
+      // and skips the uniform check for these records.
+      const { error: insertError } = await supabase.from("guests").insert({
         name: form.name.trim(),
-        student_id: form.student_id.trim() || null,
-        department: form.course,
-        grade: form.year,
-        section: form.section || null,
-        uniform_type: form.course || "default",
+        purpose: form.purpose.trim(),
+        contact: form.contact.trim() || null,
         photo_url: photoUrlJson,
-        person_type: "student",
         is_active: true,
       });
 
@@ -482,7 +498,7 @@ export default function GuardPage() {
 
       // 3. Success — toast + refresh the recent list from the DB
       setSyncing({ status: "idle", message: "" });
-      pushToast("success", `${form.name} registered successfully — ready for kiosk sync`);
+      pushToast("success", `${form.name} registered as guest — ready for kiosk sync`);
       void loadRecentEnrollments();
 
       resetForm();
@@ -490,7 +506,7 @@ export default function GuardPage() {
     } catch (err) {
       console.error("Enrollment error:", err);
       setSyncing({ status: "idle", message: "" });
-      pushToast("error", err instanceof Error ? err.message : "Failed to register student");
+      pushToast("error", err instanceof Error ? err.message : "Failed to register guest");
     }
   };
 
@@ -575,10 +591,10 @@ export default function GuardPage() {
     if (!supabase) return;
 
     try {
-      // "Recent" = the newest enrollments in the database, newest first (max 10)
+      // "Recent" = the newest guest enrollments, newest first (max 10)
       const { data, error } = await supabase
-        .from("students")
-        .select("name, department, uniform_type, photo_url, created_at")
+        .from("guests")
+        .select("name, purpose, contact, photo_url, created_at")
         .order("created_at", { ascending: false })
         .limit(10);
 
@@ -602,8 +618,8 @@ export default function GuardPage() {
           const date = s.created_at ? new Date(s.created_at) : null;
           return {
             name: s.name ?? "Unknown",
-            course: s.department ?? "",
-            uniform_type: s.uniform_type ?? "",
+            purpose: s.purpose ?? "",
+            contact: s.contact ?? "",
             time: date
               ? date.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
                 " · " +
@@ -664,20 +680,15 @@ export default function GuardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stopCamera]);
 
-  // ─── Filtered Enrollments (Search + Department) ──────
+  // ─── Filtered Enrollments (search across guest name / purpose / contact) ──
   const filteredEnrollments = recentEnrollments.filter((e) => {
     const query = searchQuery.trim().toLowerCase();
-    const matchesSearch =
+    return (
       query === "" ||
       (e.name && e.name.toLowerCase().includes(query)) ||
-      (e.course && e.course.toLowerCase().includes(query)) ||
-      (e.uniform_type && e.uniform_type.toLowerCase().includes(query));
-
-    const matchesDept =
-      selectedDeptFilter === "ALL" ||
-      (e.course && e.course.toUpperCase() === selectedDeptFilter.toUpperCase());
-
-    return matchesSearch && matchesDept;
+      (e.purpose && e.purpose.toLowerCase().includes(query)) ||
+      (e.contact && e.contact.toLowerCase().includes(query))
+    );
   });
 
   // ─── Render ───────────────────────────────────────────
@@ -692,8 +703,8 @@ export default function GuardPage() {
           <h1 className="text-2xl font-bold text-surface-900 flex items-center justify-center gap-2">
             <Shield className="w-6 h-6 text-primary-600" />
             Guard Station
-          </h1>
-          <p className="text-surface-500 text-sm mt-1 mb-6">Student enrollment & registration</p>
+          </h1>{" "}
+          <p className="text-surface-500 text-sm mt-1 mb-6">Guest enrollment & registration</p>
           <div className="glass-card p-6">
             <p className="text-yellow-600 font-bold mb-2 flex items-center justify-center gap-2">
               <AlertTriangle className="w-4 h-4" />
@@ -829,6 +840,11 @@ export default function GuardPage() {
       {activeSlotIndex !== null && (
         <div className="fixed inset-0 z-[60] bg-black">
           <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+          {/* Detection-only face box (visual helper — no recognition). */}
+          <canvas
+            ref={faceBoxCanvasRef}
+            className="absolute inset-0 w-full h-full pointer-events-none"
+          />
 
           {/* Top instruction bar */}
           <div className="absolute top-0 inset-x-0 p-6 pb-16 bg-gradient-to-b from-black/80 to-transparent text-center pointer-events-none">
@@ -899,7 +915,7 @@ export default function GuardPage() {
             >
               <span className="font-bold text-primary-600">{schoolName}</span>
               <span className="mx-1.5">·</span>
-              Student Biometric Enrollment & Turnstile Access
+              Guest Biometric Enrollment & Turnstile Access
             </p>
           </div>
         </div>
@@ -926,8 +942,7 @@ export default function GuardPage() {
                 : "text-surface-600 hover:text-surface-900"
             }`}
           >
-            <Users className="w-4 h-4 text-primary-600" />
-            <span>Student Directory</span>
+            <Users className="w-4 h-4 text-primary-600" /> <span>Guest Directory</span>
             <span className="px-1.5 py-0.5 rounded-full text-[11px] font-black bg-surface-100 text-surface-700 border border-surface-200">
               {recentEnrollments.length}
             </span>
@@ -993,11 +1008,11 @@ export default function GuardPage() {
                 <div>
                   <h2 className="text-xl font-bold text-surface-900 flex items-center gap-2">
                     <UserPlus className="w-6 h-6 text-primary-500" />
-                    Enroll New Student
+                    Enroll New Guest
                   </h2>
                   <p className="text-xs font-medium text-surface-500 mt-0.5">
                     {enrollStep === 1 && "Step 1 of 3: Capture Biometric Photos"}
-                    {enrollStep === 2 && "Step 2 of 3: Student Information"}
+                    {enrollStep === 2 && "Step 2 of 3: Guest Information"}
                     {enrollStep === 3 && "Step 3 of 3: Review & Finalize Registration"}
                   </p>
                 </div>
@@ -1070,7 +1085,7 @@ export default function GuardPage() {
                 <button
                   type="button"
                   onClick={() => {
-                    if (takenPhotos.length > 0 && form.name.trim() && form.course) {
+                    if (takenPhotos.length > 0 && form.name.trim() && form.purpose.trim()) {
                       setEnrollStep(3);
                     }
                   }}
@@ -1103,7 +1118,7 @@ export default function GuardPage() {
                     <div>
                       <h3 className="text-lg font-bold text-surface-900 flex items-center gap-2">
                         <CameraIcon className="w-5 h-5 text-primary-500" />
-                        Student Photos
+                        Guest Photos
                       </h3>
                       <p className="text-xs text-surface-500 mt-0.5">
                         Capture face photos from 5 angles to ensure high biometric accuracy at the
@@ -1257,7 +1272,7 @@ export default function GuardPage() {
                       </li>
                       <li className="flex items-center gap-2 text-sm text-primary-700">
                         <span className="w-1.5 h-1.5 rounded-full bg-primary-500" />
-                        Student should have a{" "}
+                        Guest should have a{" "}
                         <strong className="text-primary-900">neutral expression</strong>
                       </li>
                       <li className="flex items-center gap-2 text-sm text-primary-700">
@@ -1270,16 +1285,16 @@ export default function GuardPage() {
                 </div>
               )}
 
-              {/* STEP 2: STUDENT INFORMATION */}
+              {/* STEP 2: GUEST INFORMATION (personal details only — no course/uniform) */}
               {enrollStep === 2 && (
                 <div className="bg-white rounded-2xl p-6 border border-surface-200 shadow-sm animate-in fade-in duration-200">
                   <div className="mb-5">
                     <h3 className="text-lg font-bold text-surface-900 flex items-center gap-2">
                       <ClipboardList className="w-5 h-5 text-primary-500" />
-                      Student Information
+                      Guest Information
                     </h3>
                     <p className="text-xs text-surface-500 mt-0.5">
-                      Enter official academic profile details for student verification.
+                      Personal details only — student enrollment is handled by the admin dashboard.
                     </p>
                   </div>
 
@@ -1297,89 +1312,31 @@ export default function GuardPage() {
                       />
                     </div>
 
-                    <div>
+                    <div className="md:col-span-2">
                       <label className="block text-sm text-surface-700 mb-1.5 font-bold">
-                        Student ID
+                        Purpose of Visit *
                       </label>
                       <input
                         type="text"
-                        value={form.student_id}
-                        onChange={(e) => handleInputChange("student_id", e.target.value)}
-                        placeholder="e.g., 2024-001"
+                        value={form.purpose}
+                        onChange={(e) => handleInputChange("purpose", e.target.value)}
+                        placeholder="e.g., Parent-teacher meeting, Delivery, Contractor work"
                         className="input-field"
                       />
                     </div>
 
-                    <div>
+                    <div className="md:col-span-2">
                       <label className="block text-sm text-surface-700 mb-1.5 font-bold">
-                        Course / Department *
+                        Contact Number{" "}
+                        <span className="font-medium text-surface-400">(optional)</span>
                       </label>
-                      <select
-                        value={form.course}
-                        onChange={(e) => handleInputChange("course", e.target.value)}
-                        className="input-field appearance-none"
-                      >
-                        <option value="">Select course...</option>
-                        {COURSES.map((c) => (
-                          <option key={c.value} value={c.value}>
-                            {c.label}
-                          </option>
-                        ))}
-                      </select>
-                      {form.course && !courseUniforms[form.course] && (
-                        <p className="mt-1.5 text-xs text-yellow-500">
-                          No uniform types configured for this course in Supabase
-                        </p>
-                      )}
-                    </div>
-
-                    {form.course && (
-                      <div>
-                        <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-primary-50 border border-primary-100 text-xs font-bold text-primary-800">
-                          <ShieldCheck className="w-4 h-4 text-primary-600 shrink-0" />
-                          Uniform: any {form.course} uniform is accepted automatically at the kiosk
-                        </div>
-                        <p className="mt-1.5 text-xs text-surface-400 font-medium">
-                          No need to pick a type — male/female/blazer variants all verify a{" "}
-                          {form.course} student.
-                        </p>
-                      </div>
-                    )}
-
-                    <div>
-                      <label className="block text-sm text-surface-700 mb-1.5 font-bold">
-                        Year Level
-                      </label>
-                      <select
-                        value={form.year}
-                        onChange={(e) => handleInputChange("year", e.target.value)}
-                        className="input-field appearance-none"
-                      >
-                        <option value="">Select year...</option>
-                        {YEARS.map((y) => (
-                          <option key={y} value={y}>
-                            {y}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-
-                    <div>
-                      <label className="block text-sm text-surface-700 mb-1.5 font-bold">
-                        Section
-                      </label>
-                      <select
-                        value={form.section}
-                        onChange={(e) => handleInputChange("section", e.target.value)}
-                        className="input-field appearance-none"
-                      >
-                        <option value="">Select section...</option>
-                        {SECTIONS.map((s) => (
-                          <option key={s} value={s}>
-                            Section {s}
-                          </option>
-                        ))}
-                      </select>
+                      <input
+                        type="text"
+                        value={form.contact}
+                        onChange={(e) => handleInputChange("contact", e.target.value)}
+                        placeholder="e.g., 0917-123-4567"
+                        className="input-field"
+                      />
                     </div>
                   </div>
                 </div>
@@ -1393,7 +1350,7 @@ export default function GuardPage() {
                     <div className="flex items-center justify-between mb-4 border-b border-surface-100 pb-3">
                       <h3 className="text-base font-bold text-surface-900 flex items-center gap-2">
                         <ClipboardList className="w-5 h-5 text-primary-500" />
-                        Review Student Details
+                        Review Guest Details
                       </h3>
                       <button
                         type="button"
@@ -1415,39 +1372,27 @@ export default function GuardPage() {
                       </div>
                       <div>
                         <span className="text-xs text-surface-500 font-medium block">
-                          Student ID
+                          Purpose of Visit
                         </span>
+                        <span className="font-bold text-primary-700">{form.purpose || "—"}</span>
+                      </div>
+                      <div>
+                        <span className="text-xs text-surface-500 font-medium block">Contact</span>
                         <span className="font-mono font-bold text-surface-900">
-                          {form.student_id || "Unassigned"}
+                          {form.contact || "Not provided"}
                         </span>
                       </div>
                       <div>
                         <span className="text-xs text-surface-500 font-medium block">
-                          Department / Course
+                          Visitor Type
                         </span>
-                        <span className="font-bold text-primary-700">{form.course || "—"}</span>
+                        <span className="font-semibold text-surface-800">Guest</span>
                       </div>
                       <div>
                         <span className="text-xs text-surface-500 font-medium block">
-                          Uniform Type
+                          Uniform Check
                         </span>
-                        <span className="font-semibold text-surface-800">
-                          {form.course || "Standard"}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-xs text-surface-500 font-medium block">
-                          Year Level
-                        </span>
-                        <span className="font-medium text-surface-800">
-                          {form.year || "Not specified"}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-xs text-surface-500 font-medium block">Section</span>
-                        <span className="font-medium text-surface-800">
-                          {form.section ? `Section ${form.section}` : "Not specified"}
-                        </span>
+                        <span className="font-medium text-surface-800">Skipped for guests</span>
                       </div>
                     </div>
                   </div>
@@ -1503,7 +1448,7 @@ export default function GuardPage() {
                   <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center gap-3">
                     <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
                     <p className="text-xs text-emerald-800 font-medium">
-                      All steps completed. Submitting will register the student and distribute
+                      All steps completed. Submitting will register the guest and distribute
                       biometric models to connected turnstiles.
                     </p>
                   </div>
@@ -1532,7 +1477,7 @@ export default function GuardPage() {
                     disabled={takenPhotos.length === 0}
                     className="btn-primary px-8 py-3 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                   >
-                    <span>Next: Student Info</span>
+                    <span>Next: Guest Info</span>
                     <ArrowRight className="w-4 h-4" />
                   </button>
                 </>
@@ -1552,7 +1497,7 @@ export default function GuardPage() {
                   <button
                     type="button"
                     onClick={() => setEnrollStep(3)}
-                    disabled={!form.name.trim() || !form.course}
+                    disabled={!form.name.trim() || !form.purpose.trim()}
                     className="btn-primary px-8 py-3 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
                   >
                     <span>Next: Review</span>
@@ -1613,11 +1558,11 @@ export default function GuardPage() {
 
               <div>
                 <h2 className="text-2xl sm:text-3xl font-black text-surface-900 tracking-tight">
-                  Biometric Student Enrollment
+                  Guest Biometric Enrollment
                 </h2>
                 <p className="text-surface-500 text-sm sm:text-base font-medium mt-1 leading-relaxed">
-                  Register student credentials, capture 3-angle facial biometrics, and sync with
-                  Gate 01 turnstiles.
+                  Register visitor details, capture 5-angle facial biometrics, and sync with Gate 01
+                  turnstiles.
                 </p>
               </div>
 
@@ -1626,12 +1571,12 @@ export default function GuardPage() {
                 <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-surface-50 text-surface-700 text-xs font-bold border border-surface-200">
                   <Users className="w-3.5 h-3.5 text-primary-600" />
                   <span>
-                    <strong>{recentEnrollments.length}</strong> Enrolled Today
+                    <strong>{recentEnrollments.length}</strong> Guests Today
                   </span>
                 </span>
                 <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-surface-50 text-surface-700 text-xs font-bold border border-surface-200">
                   <Camera className="w-3.5 h-3.5 text-indigo-600" />
-                  <span>3-Angle Face Scanner Ready</span>
+                  <span>5-Angle Face Scanner Ready</span>
                 </span>
                 <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-surface-50 text-surface-700 text-xs font-bold border border-surface-200">
                   <Shield className="w-3.5 h-3.5 text-emerald-600" />
@@ -1648,7 +1593,7 @@ export default function GuardPage() {
               className="w-full md:w-auto px-7 py-4 bg-primary-600 hover:bg-primary-700 active:scale-98 text-white font-black text-base sm:text-lg rounded-xl shadow-sm hover:shadow-md transition-all flex items-center justify-center gap-3 shrink-0 cursor-pointer"
             >
               <UserPlus className="w-5 h-5" />
-              <span>+ Enroll Student</span>
+              <span>+ Enroll Guest</span>
             </button>
           </div>
 
@@ -1658,14 +1603,14 @@ export default function GuardPage() {
               <div>
                 <div className="flex items-center gap-2.5">
                   <h3 className="text-lg sm:text-xl font-black text-surface-900">
-                    Recent Enrollments (Today)
+                    Recent Guests (Today)
                   </h3>
                   <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-primary-50 text-primary-700 border border-primary-100">
                     {recentEnrollments.length} today
                   </span>
                 </div>
                 <p className="text-surface-500 text-xs sm:text-sm font-medium mt-0.5">
-                  Enrolled students are immediately ready for biometric access at Gate 01.
+                  Enrolled guests are immediately ready for biometric access at Gate 01.
                 </p>
               </div>
 
@@ -1695,49 +1640,51 @@ export default function GuardPage() {
 
             <div className="divide-y divide-surface-100">
               {recentEnrollments.length > 0 ? (
-                recentEnrollments.slice(0, 6).map((student, idx) => (
+                recentEnrollments.slice(0, 6).map((guest, idx) => (
                   <div
                     key={idx}
                     className="p-4 sm:p-5 hover:bg-surface-50/80 transition-colors flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                   >
                     <div className="flex items-center gap-4 min-w-0">
-                      <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-blue-100 to-indigo-100 border border-indigo-200/60 flex items-center justify-center text-primary-700 font-black text-sm shrink-0">
-                        {student.name
+                      <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-amber-100 to-orange-100 border border-amber-200/60 flex items-center justify-center text-amber-700 font-black text-sm shrink-0">
+                        {guest.name
                           .split(" ")
                           .map((n) => n[0])
                           .slice(0, 2)
                           .join("")
-                          .toUpperCase() || "ST"}
+                          .toUpperCase() || "GU"}
                       </div>
 
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-2 flex-wrap">
                           <h4 className="text-base font-black text-surface-900 truncate">
-                            {student.name}
+                            {guest.name}
                           </h4>
-                          {student.course && (
-                            <span
-                              className={`px-2.5 py-0.5 rounded-full text-xs font-bold border ${getDepartmentBadge(student.course)}`}
-                            >
-                              {student.course}
-                            </span>
-                          )}
-                          {student.uniform_type && (
-                            <span className="px-2.5 py-0.5 rounded-md text-[11px] font-semibold bg-surface-100 text-surface-700 border border-surface-200 truncate max-w-[160px]">
-                              {formatUniformLabel(student.uniform_type)}
+                          <span className="px-2.5 py-0.5 rounded-full text-xs font-bold border bg-amber-50 text-amber-700 border-amber-200">
+                            Guest
+                          </span>
+                          {guest.purpose && (
+                            <span className="px-2.5 py-0.5 rounded-md text-[11px] font-semibold bg-surface-100 text-surface-700 border border-surface-200 truncate max-w-[220px]">
+                              {guest.purpose}
                             </span>
                           )}
                         </div>
                         <div className="flex items-center gap-3 mt-1 text-xs text-surface-500 flex-wrap">
                           <span className="flex items-center gap-1 font-medium text-surface-600">
                             <Clock className="w-3.5 h-3.5 text-surface-400" />
-                            {student.time || "Recently registered"}
+                            {guest.time || "Recently registered"}
                           </span>
+                          {guest.contact && (
+                            <span className="flex items-center gap-1 font-medium text-surface-600">
+                              <PhoneCall className="w-3.5 h-3.5 text-surface-400" />
+                              {guest.contact}
+                            </span>
+                          )}
                           <span className="inline-flex items-center gap-1 text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100">
                             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                            {student.photos === 1
+                            {guest.photos === 1
                               ? "1 Photo Synced"
-                              : `${student.photos || 3} Photos Synced`}
+                              : `${guest.photos || 5} Photos Synced`}
                           </span>
                         </div>
                       </div>
@@ -1757,11 +1704,10 @@ export default function GuardPage() {
                     <Users className="w-7 h-7 text-surface-400" />
                   </div>
                   <h4 className="text-base font-bold text-surface-800">
-                    No student enrollments yet today
+                    No guest enrollments yet today
                   </h4>
                   <p className="text-xs sm:text-sm text-surface-500 mt-1 max-w-sm mx-auto">
-                    Ready to enroll the first student? Click the button above to begin photo
-                    capture.
+                    Ready to enroll the first guest? Click the button above to begin photo capture.
                   </p>
                   <button
                     onClick={() => {
@@ -1771,7 +1717,7 @@ export default function GuardPage() {
                     className="mt-4 px-5 py-2.5 bg-primary-600 hover:bg-primary-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer inline-flex items-center gap-2"
                   >
                     <UserPlus className="w-4 h-4" />
-                    <span>Enroll Student</span>
+                    <span>Enroll Guest</span>
                   </button>
                 </div>
               )}
@@ -1816,14 +1762,14 @@ export default function GuardPage() {
                 <div>
                   <div className="flex items-center gap-2 flex-wrap">
                     <h2 className="text-xl sm:text-2xl font-black text-surface-900 tracking-tight">
-                      Student Biometric Directory
+                      Guest Biometric Directory
                     </h2>
                     <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-primary-50 text-primary-700 border border-primary-100">
                       {filteredEnrollments.length} Total Enrolled
                     </span>
                   </div>
                   <p className="text-surface-500 text-xs sm:text-sm font-medium mt-0.5">
-                    Search and inspect registered student biometric records active at Gate 01
+                    Search and inspect registered guest biometric records active at Gate 01
                     turnstile scanners.
                   </p>
                 </div>
@@ -1839,7 +1785,7 @@ export default function GuardPage() {
                   pushToast("info", "Directory refreshed");
                 }}
                 className="px-4 py-3 bg-surface-50 hover:bg-surface-100 text-surface-700 text-xs font-bold rounded-2xl border border-surface-200 transition-colors flex items-center gap-2 cursor-pointer"
-                title="Refresh student list"
+                title="Refresh guest list"
               >
                 <RefreshCw className="w-4 h-4 text-surface-500" />
                 <span>Refresh</span>
@@ -1854,20 +1800,20 @@ export default function GuardPage() {
                 className="px-6 py-3 bg-primary-600 hover:bg-primary-700 text-white font-black text-sm rounded-2xl shadow-md hover:shadow-lg transition-all flex items-center gap-2.5 cursor-pointer active:scale-95"
               >
                 <UserPlus className="w-5 h-5" />
-                <span>+ Enroll Student</span>
+                <span>+ Enroll Guest</span>
               </button>
             </div>
           </div>
 
-          {/* Search & Department Filters Toolbar */}
-          <div className="bg-white p-4 rounded-2xl border border-surface-200 shadow-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+          {/* Search Toolbar */}
+          <div className="bg-white p-4 rounded-2xl border border-surface-200 shadow-xs">
             <div className="relative flex-1">
               <Search className="w-4 h-4 text-surface-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search student by name, student ID, course, or uniform..."
+                placeholder="Search guests by name, purpose of visit, or contact..."
                 className="w-full pl-10 pr-9 py-2.5 bg-surface-50 border border-surface-200 rounded-xl text-sm font-medium text-surface-900 placeholder:text-surface-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 transition-colors"
               />
               {searchQuery && (
@@ -1879,22 +1825,6 @@ export default function GuardPage() {
                 </button>
               )}
             </div>
-
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
-              {["ALL", "CBMSD", "CICI", "COAG", "Education"].map((dept) => (
-                <button
-                  key={dept}
-                  onClick={() => setSelectedDeptFilter(dept)}
-                  className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
-                    selectedDeptFilter === dept
-                      ? "bg-primary-600 text-white shadow-xs"
-                      : "bg-surface-50 text-surface-600 hover:bg-surface-100 border border-surface-200"
-                  }`}
-                >
-                  {dept}
-                </button>
-              ))}
-            </div>
           </div>
 
           {/* Comprehensive Data Table */}
@@ -1904,63 +1834,59 @@ export default function GuardPage() {
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-surface-200 bg-surface-50/75 text-xs font-black text-surface-600 uppercase tracking-wider">
-                      <th className="py-4 px-6">Student</th>
-                      <th className="py-4 px-6">Department</th>
-                      <th className="py-4 px-6">Uniform Style</th>
+                      <th className="py-4 px-6">Guest</th>
+                      <th className="py-4 px-6">Purpose of Visit</th>
+                      <th className="py-4 px-6">Contact</th>
                       <th className="py-4 px-6">Biometric Photos</th>
                       <th className="py-4 px-6">Registered</th>
                       <th className="py-4 px-6 text-right">Turnstile Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-surface-100 text-sm">
-                    {filteredEnrollments.map((student, idx) => (
+                    {filteredEnrollments.map((guest, idx) => (
                       <tr key={idx} className="hover:bg-surface-50/80 transition-colors">
                         <td className="py-4 px-6">
                           <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-100 to-indigo-100 border border-indigo-200/60 flex items-center justify-center text-primary-700 font-black text-sm shrink-0">
-                              {student.name
+                            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-100 to-orange-100 border border-amber-200/60 flex items-center justify-center text-amber-700 font-black text-sm shrink-0">
+                              {guest.name
                                 .split(" ")
                                 .map((n) => n[0])
                                 .slice(0, 2)
                                 .join("")
-                                .toUpperCase() || "ST"}
+                                .toUpperCase() || "GU"}
                             </div>
                             <div>
-                              <p className="font-bold text-surface-900 text-base">{student.name}</p>
+                              <p className="font-bold text-surface-900 text-base">{guest.name}</p>
                               <p className="text-xs text-surface-400 font-mono">
-                                Biometrics Enrolled
+                                Guest · Biometrics Enrolled
                               </p>
                             </div>
                           </div>
                         </td>
 
                         <td className="py-4 px-6">
-                          {student.course ? (
-                            <span
-                              className={`px-2.5 py-1 rounded-full text-xs font-bold border ${getDepartmentBadge(student.course)}`}
-                            >
-                              {student.course}
+                          {guest.purpose ? (
+                            <span className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-surface-100 text-surface-700 border border-surface-200">
+                              {guest.purpose}
                             </span>
                           ) : (
                             <span className="text-xs text-surface-400">—</span>
                           )}
                         </td>
 
-                        <td className="py-4 px-6">
-                          <span className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-surface-100 text-surface-700 border border-surface-200">
-                            {formatUniformLabel(student.uniform_type || student.course)}
-                          </span>
+                        <td className="py-4 px-6 text-surface-700 font-medium text-xs font-mono">
+                          {guest.contact || <span className="text-surface-400">—</span>}
                         </td>
 
                         <td className="py-4 px-6">
                           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-100">
                             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                            {student.photos || 3} of 3 Angles
+                            {guest.photos || 5} of 5 Angles
                           </span>
                         </td>
 
                         <td className="py-4 px-6 text-surface-500 font-medium text-xs whitespace-nowrap">
-                          {student.time || "Recently registered"}
+                          {guest.time || "Recently registered"}
                         </td>
 
                         <td className="py-4 px-6 text-right">
@@ -1980,24 +1906,21 @@ export default function GuardPage() {
                   <Users className="w-8 h-8 text-surface-400" />
                 </div>
                 <h4 className="text-base font-bold text-surface-800">
-                  {searchQuery || selectedDeptFilter !== "ALL"
-                    ? "No matching student records found"
-                    : "No students registered yet"}
+                  {searchQuery ? "No matching guest records found" : "No guests registered yet"}
                 </h4>
                 <p className="text-xs sm:text-sm text-surface-500 mt-1 max-w-sm mx-auto">
-                  {searchQuery || selectedDeptFilter !== "ALL"
-                    ? "Try adjusting your search criteria or switch back to ALL departments."
-                    : "Use the '+ Enroll Student' button above to register the first student."}
+                  {searchQuery
+                    ? "Try adjusting your search criteria."
+                    : "Use the '+ Enroll Guest' button above to register the first guest."}
                 </p>
-                {(searchQuery || selectedDeptFilter !== "ALL") && (
+                {searchQuery && (
                   <button
                     onClick={() => {
                       setSearchQuery("");
-                      setSelectedDeptFilter("ALL");
                     }}
                     className="mt-4 px-4 py-2 bg-surface-100 hover:bg-surface-200 text-surface-700 text-xs font-bold rounded-xl transition-colors cursor-pointer"
                   >
-                    Clear Filters
+                    Clear Search
                   </button>
                 )}
               </div>
@@ -2048,14 +1971,14 @@ export default function GuardPage() {
                   <span>DO THIS (High Turnstile Recognition)</span>
                 </div>
                 <ul className="text-sm text-emerald-900 space-y-2.5 pl-8 list-disc font-medium leading-relaxed">
-                  <li>Keep the student's face centered inside the frame guide</li>
+                  <li>Keep the guest's face centered inside the frame guide</li>
                   <li>Use bright, balanced lighting with no harsh shadows</li>
-                  <li>Student must look directly at camera with natural expression</li>
+                  <li>Guest must look directly at camera with natural expression</li>
                   <li>
-                    Take all 3 angles: <strong>Front</strong>, <strong>Left 45°</strong>, and{" "}
-                    <strong>Right 45°</strong>
+                    Take all 5 angles: <strong>Front</strong>, <strong>Left 45°</strong>,{" "}
+                    <strong>Right 45°</strong>, <strong>Up</strong>, and <strong>Down</strong>
                   </li>
-                  <li>Ask student to remove caps, sunglasses, and face masks</li>
+                  <li>Ask guest to remove caps, sunglasses, and face masks</li>
                 </ul>
               </div>
 

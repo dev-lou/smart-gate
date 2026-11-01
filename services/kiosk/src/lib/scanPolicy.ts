@@ -45,6 +45,49 @@ export const PERSON_COOLDOWN_MS = 60_000;
 export const PERSON_REDECIDE_MS = 4_000;
 
 /**
+ * Anti-false-accept confirmation gate.
+ *
+ * One hot frame is not a verdict: a motion-blurred frame can score 0.61 for
+ * the wrong student and would previously grant immediately. The same identity
+ * must win this many consecutive recognition ticks (~500ms each) before the
+ * decision pipeline may run. A stranger flickering between identities never
+ * confirms; the real student confirms in ~1.5s of holding still.
+ */
+export const CONFIRM_TICKS = 3;
+
+/** Minimum margin of the winner over the runner-up identity. A lookalike
+ *  collision (winner 0.66, runner-up 0.65) stays undecided — and therefore
+ *  unknown — instead of granting the wrong person. */
+export const MARGIN_MIN = 0.05;
+
+/** Consecutive-win tracker for one identity. */
+export interface ConfirmState {
+  id: string | null;
+  count: number;
+}
+
+export const EMPTY_CONFIRM: ConfirmState = { id: null, count: 0 };
+
+/** Advance the confirmation tracker by one recognition tick. */
+export function confirmIdentity(
+  prev: ConfirmState,
+  personId: string | null,
+  matched: boolean,
+): ConfirmState {
+  if (!matched || !personId) return { id: null, count: 0 };
+  if (prev.id !== personId) return { id: personId, count: 1 };
+  return { id: personId, count: prev.count + 1 };
+}
+
+/** True once the tracked identity has confirmed AND stands clear of the
+ *  runner-up. `margin` is winner minus runner-up similarity (pass 1 when
+ *  there is no other enrolled profile to compare against). */
+export function identityConfirmed(state: ConfirmState, margin: number): boolean {
+  if (state.id === null) return false;
+  return state.count >= CONFIRM_TICKS && margin >= MARGIN_MIN;
+}
+
+/**
  * How the gate is reported to the student.
  * - `OPEN`     the controller confirmed the barrier released
  * - `AWAITING` a controller is linked but has not confirmed

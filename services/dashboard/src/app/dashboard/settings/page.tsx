@@ -68,7 +68,7 @@ const SETTING_META: Record<
     label: "Face Match Threshold",
     type: "number",
     description:
-      "Minimum cosine similarity (0-1) the kiosk needs before it accepts a face. Higher = stricter (fewer false accepts, more false rejects); lower = more permissive. 0.4-0.5 works well in a dim lobby; raise it if the kiosk ever greets the wrong person.",
+      "Minimum cosine similarity (0-1) the kiosk needs before it accepts a face. Higher = stricter (fewer false accepts, more false rejects); lower = more permissive. 0.65 is the recommended default — the kiosk additionally requires 3 consecutive matching reads plus a clear margin over the next-closest profile, so a stranger is shown as Unknown instead of a wrong name.",
     min: 0.3,
     max: 0.9,
     step: 0.05,

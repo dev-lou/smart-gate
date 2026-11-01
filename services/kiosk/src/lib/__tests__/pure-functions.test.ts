@@ -698,12 +698,16 @@ describe("isBenignWasmLog", () => {
 // after a decision the kiosk only re-arms once the gate area is empty.
 
 import {
+  CONFIRM_TICKS,
+  MARGIN_MIN,
   PERSON_COOLDOWN_MS,
   PERSON_REDECIDE_MS,
   REARM_ABSENCE_MS,
   UNKNOWN_DWELL_MS,
   clampGateWindow,
+  confirmIdentity,
   gateStateForLog,
+  identityConfirmed,
   isRepeatDecision,
   isSettledUnknown,
   nextPresence,
@@ -989,6 +993,52 @@ describe("scan policy — visit generations", () => {
 
     gen = visitGeneration({ rearmed: state.rearmed, current: gen }).gen;
     expect(gen).toBe(2); // new visit — next student is recorded normally
+  });
+});
+
+describe("scan policy — anti-false-accept confirmation", () => {
+  // The reported bug: a stranger steps up, one motion-blurred frame scores
+  // 0.61 for an enrolled student, and the kiosk greets them with the wrong
+  // name. A single hot frame must never be a verdict.
+  it("does not confirm on the first hot frame for a stranger", () => {
+    let state = confirmIdentity({ id: null, count: 0 }, "student-a", true);
+    expect(identityConfirmed(state, 0.2)).toBe(false);
+    state = confirmIdentity(state, "student-a", true);
+    expect(identityConfirmed(state, 0.2)).toBe(false);
+  });
+
+  it("confirms after consecutive wins with a clear margin", () => {
+    let state = confirmIdentity({ id: null, count: 0 }, "student-a", true);
+    for (let i = 1; i < CONFIRM_TICKS; i++) {
+      state = confirmIdentity(state, "student-a", true);
+    }
+    expect(identityConfirmed(state, MARGIN_MIN)).toBe(true);
+  });
+
+  it("a flickering identity never confirms", () => {
+    // Stranger alternates between two enrolled lookalikes every tick.
+    let state = confirmIdentity({ id: null, count: 0 }, "student-a", true);
+    state = confirmIdentity(state, "student-b", true);
+    state = confirmIdentity(state, "student-a", true);
+    state = confirmIdentity(state, "student-b", true);
+    expect(identityConfirmed(state, 0.5)).toBe(false);
+  });
+
+  it("a lookalike collision with no margin stays undecided", () => {
+    let state = confirmIdentity({ id: null, count: 0 }, "student-a", true);
+    for (let i = 1; i < CONFIRM_TICKS + 2; i++) {
+      state = confirmIdentity(state, "student-a", true);
+    }
+    // Winner 0.66 vs runner-up 0.65 — too close to call a name.
+    expect(identityConfirmed(state, 0.01)).toBe(false);
+  });
+
+  it("an unmatched frame resets the tracker", () => {
+    let state = confirmIdentity({ id: null, count: 0 }, "student-a", true);
+    state = confirmIdentity(state, "student-a", true);
+    state = confirmIdentity(state, null, false);
+    expect(identityConfirmed(state, 1)).toBe(false);
+    expect(state).toEqual({ id: null, count: 0 });
   });
 });
 

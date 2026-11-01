@@ -154,8 +154,19 @@ export async function downloadStudents(): Promise<number> {
     .eq("is_active", true);
 
   if (error) throw error;
-  if (!data || data.length === 0) {
-    // A successful empty result means every student is inactive or removed.
+
+  // Guests live in their own table (migration 011) — same face-match
+  // pipeline, but uniform_type "guest" tells the kiosk to skip the
+  // uniform check and grant on face match.
+  const { data: guestData, error: guestError } = await supabase
+    .from("guests")
+    .select("id, name, purpose, photo_url, is_active, updated_at")
+    .eq("is_active", true);
+
+  if (guestError) throw guestError;
+
+  if ((!data || data.length === 0) && (!guestData || guestData.length === 0)) {
+    // A successful empty result means every person is inactive or removed.
     // Clear local profiles so a deactivated person cannot be recognized offline.
     await clearStudents();
     return 0;
@@ -165,7 +176,16 @@ export async function downloadStudents(): Promise<number> {
   const existingStudents = await getAllStudents();
   const existingMap = new Map(existingStudents.map((s) => [s.id, s]));
 
-  const students: StoredStudent[] = data.map((s) => {
+  const toStored = (s: {
+    id: string;
+    name: string;
+    student_id?: string | null;
+    department?: string | null;
+    uniform_type?: string | null;
+    photo_url: string | null;
+    is_active?: boolean | null;
+    updated_at: string;
+  }): StoredStudent => {
     const existing = existingMap.get(s.id);
     const unchanged =
       existing && existing.updated_at === s.updated_at && existing.embeddings.length > 0;
@@ -182,7 +202,19 @@ export async function downloadStudents(): Promise<number> {
       is_active: s.is_active ?? true,
       updated_at: s.updated_at,
     };
-  });
+  };
+
+  const students: StoredStudent[] = [
+    ...(data ?? []).map(toStored),
+    ...(guestData ?? []).map((g) =>
+      toStored({
+        ...g,
+        student_id: "",
+        department: "Guest",
+        uniform_type: "guest",
+      }),
+    ),
+  ];
 
   await clearStudents();
   await storeStudents(students);

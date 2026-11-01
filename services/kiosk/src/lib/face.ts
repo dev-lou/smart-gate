@@ -37,13 +37,15 @@ export interface MatchResult {
   person: EnrolledFace | null;
   confidence: number;
   matched: boolean;
+  /** Best similarity among every OTHER enrolled profile (anti-false-accept margin). */
+  runnerUp: number;
 }
 
 // ─── Constants ──────────────────────────────────────────────
 
 import { sendToWorker } from "./workerManager";
 
-const MATCH_THRESHOLD = 0.6; // Cosine similarity threshold
+const MATCH_THRESHOLD = 0.65; // Cosine similarity threshold
 const MODEL_BASE_URL = "https://storage.googleapis.com/mediapipe-models";
 // ✅ Updated 2026 model URLs — verified working
 // MediaPipe face detector:
@@ -207,11 +209,12 @@ export function matchFace(
   threshold: number = MATCH_THRESHOLD,
 ): MatchResult {
   if (enrolledFaces.length === 0) {
-    return { person: null, confidence: 0, matched: false };
+    return { person: null, confidence: 0, matched: false, runnerUp: -1 };
   }
 
   let bestScore = -1;
   let bestPerson: EnrolledFace | null = null;
+  const bestByPerson = new Map<string, { person: EnrolledFace; score: number }>();
 
   for (const enrolled of enrolledFaces) {
     // Compare against ALL embeddings for this student (multiple angles)
@@ -222,7 +225,16 @@ export function matchFace(
         bestScore = score;
         bestPerson = enrolled;
       }
+      const prev = bestByPerson.get(enrolled.id);
+      if (!prev || score > prev.score) bestByPerson.set(enrolled.id, { person: enrolled, score });
     }
+  }
+
+  // Runner-up: best score from any OTHER identity (margin against lookalikes).
+  let runnerUp = -1;
+  for (const [id, entry] of bestByPerson) {
+    if (bestPerson && id === bestPerson.id) continue;
+    if (entry.score > runnerUp) runnerUp = entry.score;
   }
 
   const matched = bestScore >= threshold;
@@ -231,6 +243,7 @@ export function matchFace(
     person: matched ? bestPerson : null,
     confidence: bestScore,
     matched,
+    runnerUp,
   };
 }
 

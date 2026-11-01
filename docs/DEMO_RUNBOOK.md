@@ -61,7 +61,7 @@ One page. Follow this order and the live demo cannot fail.
 | Wrong service says a table/column is missing | Run `database/verify.sql` in the SQL Editor — it names the exact migration to re-run. |
 | Uniform check says "Uniform detector not loaded" | Model failed to load once online — reload the kiosk while online, verify `200` on `/models/uniform_yolo11n.onnx` |
 | Arduino won't connect | Tap "Connect Hardware", pick the port; check USB-OTG cable + Arduino powered |
-| Face match wrong person | Raise the threshold in Supabase `system_settings` (`face_recognition_threshold`, default 0.6) — but re-test first |
+| Face match wrong person | Raise the threshold in Supabase `system_settings` (`face_recognition_threshold`, default 0.65) — but re-test first |
 | No internet at venue and models never cached | Can't happen if step 5 was done — that's the point of the airplane-mode rehearsal |
 
 ## 🛠️ Quick Commands

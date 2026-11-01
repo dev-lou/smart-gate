@@ -33,6 +33,27 @@ CREATE INDEX IF NOT EXISTS idx_students_student_id ON students(student_id);
 CREATE INDEX IF NOT EXISTS idx_students_is_active ON students(is_active);
 
 -- ============================================================
+-- 1b. Guests Table (see migration 011)
+-- ============================================================
+-- Visitors enrolled at the guard station: personal details + face
+-- photos only, no course or uniform. The kiosk syncs active guests
+-- and grants on face match (uniform check skipped for guests).
+-- ============================================================
+CREATE TABLE IF NOT EXISTS guests (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    name TEXT NOT NULL,
+    purpose TEXT,
+    contact TEXT,
+    photo_url TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_guests_updated_at ON guests(updated_at);
+CREATE INDEX IF NOT EXISTS idx_guests_is_active ON guests(is_active);
+
+-- ============================================================
 -- 2. Access Logs
 -- ============================================================
 -- Logs synced from the kiosk tablet. Each entry records an
@@ -96,7 +117,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
 INSERT INTO system_settings (key, value, description) VALUES
     ('school_name', 'Iloilo State University of Fisheries Science and Technology', 'Institution branding shown in navbars & titles across all apps (dashboard, guard, kiosk)'),
     ('school_initials', 'ISUFST', 'Short initials shown in the logo badge across all apps'),
-    ('face_recognition_threshold', '0.6', 'Minimum cosine similarity for face match (0-1)'),
+    ('face_recognition_threshold', '0.65', 'Minimum cosine similarity for face match (0-1)'),
     ('uniform_detection_enabled', 'true', 'Whether to enforce uniform detection'),
     ('gate_open_duration', '5', 'How long gate stays open (seconds)'),
     ('sync_interval_minutes', '60', 'How often tablet syncs with cloud (minutes)'),
@@ -119,6 +140,11 @@ CREATE TRIGGER update_students_updated_at
     BEFORE UPDATE ON students
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+DROP TRIGGER IF EXISTS update_guests_updated_at ON guests;
+CREATE TRIGGER update_guests_updated_at
+    BEFORE UPDATE ON guests
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 DROP TRIGGER IF EXISTS update_system_settings_updated_at ON system_settings;
 CREATE TRIGGER update_system_settings_updated_at
     BEFORE UPDATE ON system_settings
@@ -128,21 +154,27 @@ CREATE TRIGGER update_system_settings_updated_at
 -- 6. Row Level Security
 -- ============================================================
 ALTER TABLE students ENABLE ROW LEVEL SECURITY;
+ALTER TABLE guests ENABLE ROW LEVEL SECURITY;
 ALTER TABLE access_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE system_settings ENABLE ROW LEVEL SECURITY;
 
 -- Drop old policies first (safe to run multiple times)
 DROP POLICY IF EXISTS "Authenticated users can manage students" ON students;
+DROP POLICY IF EXISTS "Authenticated users can manage guests" ON guests;
 DROP POLICY IF EXISTS "Authenticated users can manage access_logs" ON access_logs;
 DROP POLICY IF EXISTS "Authenticated users can manage system_settings" ON system_settings;
 DROP POLICY IF EXISTS "Anon can read active students" ON students;
+DROP POLICY IF EXISTS "Anon can read active guests" ON guests;
 DROP POLICY IF EXISTS "Anon can insert access_logs" ON access_logs;
 DROP POLICY IF EXISTS "Anon can read settings" ON system_settings;
 
 -- Allow authenticated users full access
 CREATE POLICY "Authenticated users can manage students"
     ON students FOR ALL USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
+
+CREATE POLICY "Authenticated users can manage guests"
+    ON guests FOR ALL USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
 
 CREATE POLICY "Authenticated users can manage access_logs"
     ON access_logs FOR ALL USING (auth.role() = 'authenticated') WITH CHECK (auth.role() = 'authenticated');
@@ -153,6 +185,10 @@ CREATE POLICY "Authenticated users can manage system_settings"
 -- Allow anon key to read students (for kiosk tablet sync)
 CREATE POLICY "Anon can read active students"
     ON students FOR SELECT USING (is_active = true);
+
+-- Allow anon key to read active guests (for kiosk tablet sync)
+CREATE POLICY "Anon can read active guests"
+    ON guests FOR SELECT USING (is_active = true);
 
 -- Allow anon key to insert access_logs (for kiosk tablet)
 CREATE POLICY "Anon can insert access_logs"

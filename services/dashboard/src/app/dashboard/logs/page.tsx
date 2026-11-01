@@ -1,9 +1,20 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
-import { ClipboardList, RefreshCw, CheckCircle2, XCircle, SearchX } from "lucide-react";
+import {
+  ClipboardList,
+  RefreshCw,
+  CheckCircle2,
+  XCircle,
+  SearchX,
+  Printer,
+  Download,
+  FileText,
+  Search,
+  X,
+} from "lucide-react";
 import {
   countArrivals,
   formatRelative,
@@ -36,6 +47,8 @@ export default function LogsPage() {
   const [error, setError] = useState("");
   const [filter, setFilter] = useState<"all" | "granted" | "denied">("all");
   const [dateRange, setDateRange] = useState("24h");
+  const [search, setSearch] = useState("");
+  const [reportOpen, setReportOpen] = useState(false);
   /**
    * Today's granted reads, fetched separately from the table so the attendance
    * panel always covers the whole day regardless of the table's date filter.
@@ -127,6 +140,97 @@ export default function LogsPage() {
   const attendance = summarizeDay(todayGrants, new Date());
   const arrivals = countArrivals(attendance);
 
+  // ─── Client-side name search over the loaded (capped) rows ───
+  const visibleLogs = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return logs;
+    return logs.filter(
+      (l) =>
+        (l.person_name || "").toLowerCase().includes(q) ||
+        (l.person_type || "").toLowerCase().includes(q) ||
+        (l.method || "").toLowerCase().includes(q) ||
+        (l.failure_reason || "").toLowerCase().includes(q),
+    );
+  }, [logs, search]);
+
+  // ─── Report (built from the same filtered rows as the table) ───
+  const report = useMemo(() => {
+    const granted = visibleLogs.filter((l) => l.success).length;
+    const denied = visibleLogs.length - granted;
+    const byMethod: Record<string, number> = {};
+    const byType: Record<string, number> = {};
+    for (const l of visibleLogs) {
+      byMethod[l.method || "unknown"] = (byMethod[l.method || "unknown"] || 0) + 1;
+      byType[l.person_type || "unknown"] = (byType[l.person_type || "unknown"] || 0) + 1;
+    }
+    return {
+      total: visibleLogs.length,
+      granted,
+      denied,
+      rate: visibleLogs.length > 0 ? Math.round((granted / visibleLogs.length) * 100) : 0,
+      byMethod,
+      byType,
+    };
+  }, [visibleLogs]);
+
+  const dateRangeLabel =
+    dateRange === "1h"
+      ? "Last hour"
+      : dateRange === "24h"
+        ? "Last 24 hours"
+        : dateRange === "7d"
+          ? "Last 7 days"
+          : "Last 30 days";
+
+  function downloadCsv() {
+    const header = [
+      "Time",
+      "Person",
+      "Type",
+      "Method",
+      "Direction",
+      "Status",
+      "Confidence %",
+      "Uniform OK",
+      "Gate",
+      "Reason",
+    ];
+    const esc = (v: string | number | null | undefined) => {
+      const s = v === null || v === undefined ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const rows = visibleLogs.map((l) =>
+      [
+        formatScanTime(l.device_timestamp),
+        l.person_name || "Unknown",
+        l.person_type || "",
+        l.method,
+        l.direction || "",
+        l.success ? "GRANTED" : "DENIED",
+        l.confidence !== null ? Math.round(l.confidence * 100) : "",
+        l.uniform_ok === null ? "" : l.uniform_ok ? "OK" : "FAIL",
+        l.gate_state || "",
+        l.failure_reason || "",
+      ]
+        .map(esc)
+        .join(","),
+    );
+    const csv = [header.join(","), ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `access-report-${filter}-${dateRange}-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function printReport() {
+    window.print();
+  }
+
   return (
     <div>
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-8">
@@ -138,10 +242,20 @@ export default function LogsPage() {
             {logs.length} events in selected period
           </p>
         </div>
-        <button onClick={loadLogs} className="btn-secondary text-sm flex items-center gap-2">
-          <RefreshCw className="w-4 h-4" />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setReportOpen(true)}
+            disabled={loading || visibleLogs.length === 0}
+            className="btn-primary text-sm flex items-center gap-2 disabled:opacity-50"
+          >
+            <FileText className="w-4 h-4" />
+            Generate Report
+          </button>
+          <button onClick={loadLogs} className="btn-secondary text-sm flex items-center gap-2">
+            <RefreshCw className="w-4 h-4" />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -150,7 +264,17 @@ export default function LogsPage() {
         </div>
       )}
 
-      <div className="flex items-center gap-4 mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-6">
+        <div className="relative flex-1 max-w-md">
+          <Search className="w-4 h-4 text-surface-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by name, type, method, or reason..."
+            className="input-field pl-10"
+          />
+        </div>
         <div className="flex gap-2">
           {(["all", "granted", "denied"] as const).map((f) => (
             <button
@@ -236,7 +360,7 @@ export default function LogsPage() {
       <div className="bg-white rounded-2xl shadow-sm border border-surface-200 overflow-hidden">
         {loading ? (
           <div className="p-12 text-center text-surface-500 font-medium">Loading...</div>
-        ) : logs.length === 0 ? (
+        ) : visibleLogs.length === 0 ? (
           <div className="p-16 flex flex-col items-center justify-center text-center">
             <div className="w-20 h-20 bg-surface-50 rounded-full flex items-center justify-center mb-4 border border-surface-100">
               <SearchX className="w-10 h-10 text-surface-300" />
@@ -264,7 +388,7 @@ export default function LogsPage() {
                 </tr>
               </thead>
               <tbody>
-                {logs.map((log) => (
+                {visibleLogs.map((log) => (
                   <tr
                     key={log.id}
                     className="border-b border-surface-50 hover:bg-surface-50 transition-colors"
@@ -355,6 +479,149 @@ export default function LogsPage() {
           </div>
         )}
       </div>
+
+      {/* ─── Printable report modal ─── */}
+      {reportOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-surface-900/40 backdrop-blur-sm no-print"
+            onClick={() => setReportOpen(false)}
+          />
+          <div className="relative w-full max-w-3xl max-h-[90vh] bg-white rounded-3xl shadow-2xl overflow-hidden flex flex-col">
+            <div className="p-6 border-b border-surface-100 flex items-center justify-between no-print">
+              <h2 className="text-xl font-bold text-surface-900 flex items-center gap-2">
+                <FileText className="w-5 h-5 text-primary-500" />
+                Access Report
+              </h2>
+              <button
+                onClick={() => setReportOpen(false)}
+                className="p-2 hover:bg-surface-100 rounded-full transition-colors text-surface-500 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Print-only + on-screen report body */}
+            <div id="access-report" className="p-6 sm:p-8 overflow-y-auto">
+              <div className="mb-6">
+                <h1 className="text-2xl font-black text-surface-900">Smart Gate — Access Report</h1>
+                <p className="text-sm text-surface-500 font-medium mt-1">
+                  {dateRangeLabel} · Status: {filter === "all" ? "All" : filter} ·
+                  {search.trim() ? ` Search: "${search.trim()}" ·` : ""} Generated{" "}
+                  {new Date().toLocaleString()} · {report.total} event
+                  {report.total === 1 ? "" : "s"}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+                {[
+                  { label: "Total events", value: report.total },
+                  { label: "Granted", value: report.granted },
+                  { label: "Denied", value: report.denied },
+                  { label: "Grant rate", value: `${report.rate}%` },
+                ].map((s) => (
+                  <div
+                    key={s.label}
+                    className="border border-surface-200 rounded-xl p-4 text-center"
+                  >
+                    <p className="text-2xl font-black text-surface-900">{s.value}</p>
+                    <p className="text-[11px] font-bold uppercase tracking-wider text-surface-500 mt-1">
+                      {s.label}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-6 text-sm">
+                <div className="border border-surface-200 rounded-xl p-4">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-surface-500 mb-2">
+                    By method
+                  </p>
+                  {Object.entries(report.byMethod).map(([m, c]) => (
+                    <p key={m} className="flex justify-between font-medium text-surface-700">
+                      <span className="uppercase font-mono text-xs">{m}</span>
+                      <span className="font-bold">{c}</span>
+                    </p>
+                  ))}
+                </div>
+                <div className="border border-surface-200 rounded-xl p-4">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-surface-500 mb-2">
+                    By person type
+                  </p>
+                  {Object.entries(report.byType).map(([t, c]) => (
+                    <p key={t} className="flex justify-between font-medium text-surface-700">
+                      <span>{t}</span>
+                      <span className="font-bold">{c}</span>
+                    </p>
+                  ))}
+                </div>
+              </div>
+
+              <table className="w-full text-sm report-table">
+                <thead>
+                  <tr className="border-b-2 border-surface-900">
+                    <th className="text-left py-2 pr-3 font-bold">Time</th>
+                    <th className="text-left py-2 pr-3 font-bold">Person</th>
+                    <th className="text-left py-2 pr-3 font-bold">Method</th>
+                    <th className="text-left py-2 pr-3 font-bold">Status</th>
+                    <th className="text-left py-2 font-bold">Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleLogs.map((l) => (
+                    <tr key={l.id} className="border-b border-surface-100">
+                      <td className="py-2 pr-3 whitespace-nowrap text-xs">
+                        {formatScanTime(l.device_timestamp)}
+                      </td>
+                      <td className="py-2 pr-3 font-bold">{l.person_name || "Unknown"}</td>
+                      <td className="py-2 pr-3 uppercase font-mono text-xs">{l.method}</td>
+                      <td className="py-2 pr-3 font-bold">{l.success ? "GRANTED" : "DENIED"}</td>
+                      <td className="py-2 text-xs text-surface-600">{l.failure_reason || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="p-6 border-t border-surface-100 flex flex-col sm:flex-row justify-end gap-2 no-print">
+              <button
+                onClick={() => setReportOpen(false)}
+                className="px-4 py-2.5 bg-white border border-surface-200 hover:bg-surface-50 text-surface-700 rounded-xl text-sm font-bold transition-colors cursor-pointer"
+              >
+                Close
+              </button>
+              <button
+                onClick={downloadCsv}
+                className="px-5 py-2.5 bg-white border border-surface-200 hover:bg-surface-50 text-surface-700 rounded-xl text-sm font-bold transition-colors flex items-center gap-2 cursor-pointer"
+              >
+                <Download className="w-4 h-4" />
+                Download CSV
+              </button>
+              <button
+                onClick={printReport}
+                className="px-5 py-2.5 bg-primary-600 hover:bg-primary-500 text-white rounded-xl text-sm font-bold transition-colors flex items-center gap-2 cursor-pointer"
+              >
+                <Printer className="w-4 h-4" />
+                Print Report
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Print CSS: only the report prints, never the app chrome */}
+      <style>{`@media print {
+        body * { visibility: hidden !important; }
+        #access-report, #access-report * { visibility: visible !important; }
+        #access-report {
+          position: absolute !important;
+          inset: 0 !important;
+          max-height: none !important;
+          overflow: visible !important;
+          padding: 0 !important;
+        }
+        #access-report .report-table { font-size: 11px; }
+      }`}</style>
     </div>
   );
 }

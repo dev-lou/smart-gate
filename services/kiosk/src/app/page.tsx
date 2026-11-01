@@ -40,12 +40,16 @@ import {
   NOTICE_ABSENCE_CLEAR_MS,
   VERDICT_HOLD_MS,
   clampGateWindow,
+  confirmIdentity,
+  EMPTY_CONFIRM,
   gateStateForLog,
+  identityConfirmed,
   isRepeatDecision,
   isSettledUnknown,
   nextPresence,
   resolveGateOutcome,
   shouldDecide,
+  type ConfirmState,
 } from "@/lib/scanPolicy";
 import {
   getEnrolledFaces,
@@ -424,7 +428,7 @@ export default function KioskPage() {
     gateOpenDuration: number;
   }>({
     uniformEnabled: true,
-    matchThreshold: 0.6,
+    matchThreshold: 0.65,
     gateOpenDuration: 5,
   });
   const settingsLoadedRef = useRef(false);
@@ -474,6 +478,27 @@ export default function KioskPage() {
   /** When the current face first measured below the match threshold (0 = none). */
   const unknownSinceRef = useRef(0);
   const lastDecisionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Frozen verdict snapshot — the identity shown on the grant/deny card.
+   * Recognition keeps running (and overwriting `lastMatch`) while the card is
+   * up, so the card must read from this snapshot or the name vanishes the
+   * moment the person ducks out of frame. Cleared when the card hold elapses.
+   */
+  const [verdict, setVerdict] = useState<{
+    person: EnrolledFace;
+    confidence: number;
+    uniform: UniformCheckResult | null;
+    isGuest: boolean;
+  } | null>(null);
+  /**
+   * Anti-false-accept confirmation: the same identity must win consecutive
+   * recognition ticks before the decision pipeline may run. One hot frame
+   * (motion blur scoring 0.61 for the wrong student) only moves the HUD.
+   * Policy lives in scanPolicy (unit-tested); this ref just carries it.
+   */
+  const confirmRef = useRef<ConfirmState>({ ...EMPTY_CONFIRM });
+  /** Settled unrecognised visitor — drives the amber "Unknown face" card. */
+  const [unknownNotice, setUnknownNotice] = useState<{ score: number; at: number } | null>(null);
   /** Render-loop mirror of `holdNotice` — safe to read inside the rAF loop. */
   const holdNoticeRef = useRef<{
     kind: "granted" | "denied";
@@ -898,6 +923,38 @@ export default function KioskPage() {
     // either we are about to read the uniform or this face is unknown.
     setScanStep(match.matched ? "uniform" : settledUnknown ? "done" : "face");
 
+    // ─── Unknown-visitor notice (settled, still no match) ──
+    // Surfaced here — ahead of every early-return below — so a stranger always
+    // gets an honest "not enrolled" card instead of silence. Never shows a name.
+    if (settledUnknown && !match.matched) {
+      setUnknownNotice((prev) =>
+        prev
+          ? { score: match.confidence, at: prev.at }
+          : { score: match.confidence, at: Date.now() },
+      );
+      const beep = shouldPlayBeep(lastUnknownBeepRef.current, Date.now());
+      lastUnknownBeepRef.current = beep.lastPlayedAt;
+      if (beep.play) playCue("unknown");
+    } else if (match.matched) {
+      // Same-value bail-out: no-op when already null, so no extra renders.
+      setUnknownNotice(null);
+    }
+
+    // ─── Anti-false-accept confirmation gate ────────────
+    // One hot frame is not a verdict: the same identity must win consecutive
+    // ticks AND stand clear of the runner-up before the decision pipeline
+    // (uniform → verdict → log → gate) may run. Until then the HUD already
+    // tracks the face above — this only withholds the grant.
+    confirmRef.current = confirmIdentity(
+      confirmRef.current,
+      match.matched && match.person ? match.person.id : null,
+      match.matched,
+    );
+    const margin = match.runnerUp < 0 ? 1 : match.confidence - match.runnerUp;
+    if (!identityConfirmed(confirmRef.current, margin)) {
+      return;
+    }
+
     // ─── Per-identity decision gate ─────────────────────
     // Recognition always runs (the HUD and identity phase above track whoever
     // is in frame); THIS decides whether the person in frame may go through
@@ -939,16 +996,20 @@ export default function KioskPage() {
       }
     }
 
-    // Check uniform if matched
+    // Check uniform if matched — guests skip it (no uniform requirement)
+    const isGuestMatch = match.matched && match.person?.uniform_type === "guest";
     let uniformCheck: UniformCheckResult | null = null;
-    if (match.matched && match.person && settingsRef.current.uniformEnabled) {
+    if (match.matched && match.person && settingsRef.current.uniformEnabled && !isGuestMatch) {
       uniformCheck = await checkUniform(video, face.bbox, match.person.uniform_type, canvas);
       setLastUniform(uniformCheck);
+    } else {
+      setLastUniform(null);
     }
 
     // Determine access
     const accessGranted =
-      match.matched && (!settingsRef.current.uniformEnabled || uniformCheck?.ok === true);
+      match.matched &&
+      (isGuestMatch || !settingsRef.current.uniformEnabled || uniformCheck?.ok === true);
 
     if (accessGranted) {
       // Grant access — the card timer must know it owns the screen (a new
@@ -957,6 +1018,15 @@ export default function KioskPage() {
       setKioskState("granted");
       playCue("grant");
       setStatusMessage(`Welcome, ${match.person!.name}!`);
+      // Freeze the card identity: recognition keeps overwriting lastMatch
+      // while the card is up, so the card reads from this snapshot and the
+      // name survives the person stepping out of frame for the full hold.
+      setVerdict({
+        person: match.person!,
+        confidence: match.confidence,
+        uniform: uniformCheck,
+        isGuest: isGuestMatch,
+      });
 
       // Open gate (Wi-Fi ESP32 or USB Arduino)
       // 🔴 FIX BUG #1: Use ref for gate state check
@@ -1013,15 +1083,17 @@ export default function KioskPage() {
         await addLog({
           person_id: match.person!.id,
           person_name: match.person!.name,
-          person_type: "student",
+          person_type: isGuestMatch ? "guest" : "student",
           direction: "entry",
           method: "face",
           success: true,
           confidence: match.confidence,
-          uniform_ok: uniformCheck?.ok ?? null,
-          failure_reason: uniformCheck
-            ? `Uniform verified — ${uniformCheck.detail}`
-            : "Granted — uniform check disabled in settings",
+          uniform_ok: isGuestMatch ? null : (uniformCheck?.ok ?? null),
+          failure_reason: isGuestMatch
+            ? "Granted — guest, uniform check skipped"
+            : uniformCheck
+              ? `Uniform verified — ${uniformCheck.detail}`
+              : "Granted — uniform check disabled in settings",
           gate_state: gateStateForLog({
             gateConnected: gateConnectedNow,
             confirmed: gateConfirmed,
@@ -1049,6 +1121,7 @@ export default function KioskPage() {
         setStatusMessage("Ready");
         setLastMatch(null);
         setLastUniform(null);
+        setVerdict(null);
         // The barrier banner outlives the verdict card when the configured
         // open window is longer than the card hold — clear it only once the
         // window has actually elapsed (the countdown effect handles the rest).
@@ -1063,6 +1136,12 @@ export default function KioskPage() {
       setKioskState("denied");
       playCue("deny");
       setStatusMessage(uniformCheck.detail);
+      setVerdict({
+        person: match.person!,
+        confidence: match.confidence,
+        uniform: uniformCheck,
+        isGuest: false,
+      });
 
       // Same duplicate guard as a grant: a failed uniform check must not be
       // re-logged every few seconds while the student stands there. The
@@ -1088,7 +1167,7 @@ export default function KioskPage() {
         await addLog({
           person_id: match.person!.id,
           person_name: match.person!.name,
-          person_type: "student",
+          person_type: match.person!.uniform_type === "guest" ? "guest" : "student",
           direction: "entry",
           method: "face",
           success: false,
@@ -1109,17 +1188,15 @@ export default function KioskPage() {
           setStatusMessage("Ready");
           setLastMatch(null);
           setLastUniform(null);
+          setVerdict(null);
         }
       }, 4000);
     } else {
-      // Unknown face — soft throttled beep, no voice (never talk to strangers)
+      // Unreachable while the confirmation gate above holds (confirmed implies
+      // matched), kept as a safety net. The unknown notice + beep already ran
+      // ahead of the gates. Never talk to strangers: no voice, no name.
       setKioskState("ready");
       setStatusMessage("Scanning...");
-      // Only cue once the read has settled — no beep at someone who is still
-      // walking up and is about to match.
-      const decision = shouldPlayBeep(lastUnknownBeepRef.current, Date.now());
-      lastUnknownBeepRef.current = decision.lastPlayedAt;
-      if (settledUnknown && decision.play) playCue("unknown");
       // Deliberately no audit row here. access_logs records identified
       // students — granted, or denied for uniform — and nothing else; an
       // unreadable face is not an access attempt by a known identity. This
@@ -2428,7 +2505,7 @@ export default function KioskPage() {
 
       <div className="absolute bottom-6 left-6 sm:left-10 right-6 sm:right-10 flex items-end justify-center z-30 pointer-events-none">
         <div className="w-full max-w-2xl flex justify-center pointer-events-auto">
-          {lastMatch?.matched && lastMatch.person ? (
+          {kioskState === "granted" && verdict ? (
             <div className="glass-card p-6 sm:p-8 w-full shadow-2xl border-2 border-emerald-500/50 bg-white/95 animate-in fade-in zoom-in-95 duration-200">
               <div className="flex items-center gap-5">
                 <div className="w-16 h-16 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-center justify-center shrink-0 shadow-sm">
@@ -2440,36 +2517,36 @@ export default function KioskPage() {
                       Access Granted
                     </span>
                     <span className="text-sm text-emerald-700 font-mono font-bold">
-                      {Math.round((lastMatch.confidence ?? 0.9) * 100)}% Match
+                      {Math.round((verdict.confidence ?? 0.9) * 100)}% Match
                     </span>
                   </div>
                   <h2 className="text-2xl sm:text-3xl font-black text-surface-900 tracking-tight truncate mt-1">
-                    {lastMatch.person.name}
+                    {verdict.person.name}
                   </h2>
                   <p className="text-xs sm:text-sm text-surface-500 font-medium">
-                    ID: {lastMatch.person.student_id || lastMatch.person.id.slice(0, 8)}
-                    {lastMatch.person.department && ` • ${lastMatch.person.department}`}
+                    ID: {verdict.person.student_id || verdict.person.id.slice(0, 8)}
+                    {verdict.person.department && ` • ${verdict.person.department}`}
                   </p>
                 </div>
               </div>
-              {lastUniform && (
+              {verdict.uniform && (
                 <div
                   className={`mt-4 pt-3.5 border-t border-surface-200/60 text-sm sm:text-base font-bold flex items-center justify-between ${
-                    lastUniform.ok ? "text-emerald-700" : "text-rose-600"
+                    verdict.uniform.ok ? "text-emerald-700" : "text-rose-600"
                   }`}
                 >
                   <div className="flex items-center gap-2 truncate">
-                    {lastUniform.ok ? (
+                    {verdict.uniform.ok ? (
                       <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0" />
                     ) : (
                       <XCircle className="w-5 h-5 text-rose-600 shrink-0" />
                     )}
                     <span className="truncate">
-                      Uniform: {lastUniform.ok ? "PASS" : "FAIL"} — {lastUniform.detail}
+                      Uniform: {verdict.uniform.ok ? "PASS" : "FAIL"} — {verdict.uniform.detail}
                     </span>
                   </div>
                   <span className="text-xs font-mono opacity-80 shrink-0 ml-2">
-                    {Math.round(lastUniform.confidence * 100)}%
+                    {Math.round(verdict.uniform.confidence * 100)}%
                   </span>
                 </div>
               )}
@@ -2521,7 +2598,29 @@ export default function KioskPage() {
                     ACCESS DENIED
                   </p>
                   <p className="text-surface-700 font-semibold text-sm sm:text-base mt-1">
-                    {statusMessage || "Verification failed"}
+                    {holdNotice?.detail ?? statusMessage ?? "Verification failed"}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : unknownNotice &&
+            (kioskState === "ready" || kioskState === "scanning") &&
+            !holdNotice ? (
+            <div className="glass-card p-6 sm:p-8 w-full shadow-2xl border-2 border-amber-300 bg-white/95 animate-in fade-in zoom-in-95 duration-200">
+              <div className="flex items-center gap-5">
+                <div className="w-16 h-16 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
+                  <UserCheck className="w-10 h-10 text-amber-600" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-amber-700 font-black text-2xl sm:text-3xl tracking-tight">
+                    UNKNOWN FACE
+                  </p>
+                  <p className="text-surface-700 font-semibold text-sm sm:text-base mt-1">
+                    Not enrolled — please see the guard station
+                  </p>
+                  <p className="text-xs font-mono text-surface-500 font-bold mt-1">
+                    Closest profile {Math.max(0, Math.round(unknownNotice.score * 100))}% · needs{" "}
+                    {Math.round(settingsRef.current.matchThreshold * 100)}% to open the gate
                   </p>
                 </div>
               </div>
@@ -2711,7 +2810,9 @@ export default function KioskPage() {
                   gateConnected ? "text-green-600" : "text-rose-500"
                 }`}
               >
-                {gateConnected ? `linked · ${gateTransport === "wifi" ? "wifi" : "usb"}` : "no link"}
+                {gateConnected
+                  ? `linked · ${gateTransport === "wifi" ? "wifi" : "usb"}`
+                  : "no link"}
               </span>
             </div>
 
@@ -2756,8 +2857,8 @@ export default function KioskPage() {
             )}
 
             <p className="text-[11px] leading-snug text-surface-500">
-              No camera needed. The GPIO 4 button also opens the gate by itself — tap it to check the
-              ESP32 and servo without this screen.
+              No camera needed. The GPIO 4 button also opens the gate by itself — tap it to check
+              the ESP32 and servo without this screen.
             </p>
           </div>
 
