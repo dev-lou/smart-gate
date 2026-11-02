@@ -723,10 +723,10 @@ export default function StudentsPage() {
             Students
           </h1>
           <p className="text-surface-500 font-medium text-sm mt-1">
-            {students.length} enrolled · {activeCount} active — manage profiles, uniforms & access
+            {students.length} enrolled · {activeCount} active — manage profiles & access
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={openGuestModal}
             className="btn-secondary text-sm flex items-center gap-2"
@@ -745,7 +745,7 @@ export default function StudentsPage() {
       </div>
 
       {/* Students / Guests tabs */}
-      <div className="flex gap-1.5 bg-white border border-surface-200 rounded-xl p-1 self-start mb-6 w-max">
+      <div className="flex gap-1.5 bg-white border border-surface-200 rounded-xl p-1 self-start mb-6 w-max max-w-full overflow-x-auto">
         {(
           [
             { id: "students", label: `Students (${students.length})` },
@@ -786,7 +786,7 @@ export default function StudentsPage() {
                 className="input-field pl-10"
               />
             </div>
-            <div className="flex gap-1.5 bg-white border border-surface-200 rounded-xl p-1 self-start">
+            <div className="flex gap-1.5 bg-white border border-surface-200 rounded-xl p-1 self-start max-w-full overflow-x-auto">
               {DEPARTMENTS.map((d) => (
                 <button
                   key={d}
@@ -818,7 +818,7 @@ export default function StudentsPage() {
                 <p className="text-surface-500 font-medium text-sm max-w-sm">
                   {search || deptFilter !== "ALL"
                     ? "Try adjusting your search or department filter."
-                    : "Get started by enrolling your first student — photos, uniform, and profile are captured in a guided 3-step flow."}
+                    : "Get started by enrolling your first student — photos and profile are captured in a guided 3-step flow."}
                 </p>
                 {!search && deptFilter === "ALL" && (
                   <button
@@ -839,7 +839,7 @@ export default function StudentsPage() {
                       <th className="table-header">ID</th>
                       <th className="table-header">Course</th>
                       <th className="table-header">Year · Section</th>
-                      <th className="table-header">Uniform</th>
+                      <th className="table-header">Course</th>
                       <th className="table-header">Status</th>
                       <th className="table-header">Enrolled</th>
                       <th className="table-header">Actions</th>
@@ -974,7 +974,7 @@ export default function StudentsPage() {
               <h3 className="text-lg font-bold text-surface-900 mb-1">No guests registered</h3>
               <p className="text-surface-500 font-medium text-sm max-w-sm">
                 Register visitors from the guard station or with the New Guest button above — no
-                course or uniform needed.
+                course needed.
               </p>
               <button
                 onClick={openGuestModal}
@@ -1169,7 +1169,7 @@ export default function StudentsPage() {
                   },
                   {
                     icon: <Palette className="w-4 h-4" />,
-                    label: "Uniform",
+                    label: "Course",
                     value: formatUniformLabel(viewing.uniform_type),
                   },
                   {
@@ -1390,7 +1390,7 @@ export default function StudentsPage() {
               {editForm.department && (
                 <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-primary-50 border border-primary-100 text-xs font-bold text-primary-800">
                   <CheckCircle2 className="w-4 h-4 text-primary-600 shrink-0" />
-                  Uniform: any {editForm.department} uniform is accepted automatically at the kiosk
+                  Course: {editForm.department || "—"} on record for this student
                 </div>
               )}
               <div>
@@ -1593,7 +1593,7 @@ export default function StudentsPage() {
                   Register Guest
                 </h2>
                 <p className="text-xs font-medium text-surface-500 mt-0.5">
-                  Personal details + face photos — no course or uniform needed
+                  Personal details + face photos — no course needed
                 </p>
               </div>
               <button

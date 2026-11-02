@@ -807,12 +807,8 @@ export default function EnrollmentWizard({ open, onClose, onEnrolled }: Enrollme
                     <div className="md:col-span-2">
                       <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-primary-50 border border-primary-100 text-xs font-bold text-primary-800">
                         <CheckCircle2 className="w-4 h-4 text-primary-600 shrink-0" />
-                        Uniform: any {form.course} uniform is accepted automatically at the kiosk
+                        Course {form.course} recorded — kiosk grants on face match
                       </div>
-                      <p className="text-xs text-surface-400 font-medium mt-1.5">
-                        No need to pick a type — male/female/blazer variants all verify a{" "}
-                        {form.course} student.
-                      </p>
                     </div>
                   )}
                 </div>
@@ -864,7 +860,6 @@ export default function EnrollmentWizard({ open, onClose, onEnrolled }: Enrollme
                     { label: "Course", value: form.course },
                     { label: "Year Level", value: form.year || "—" },
                     { label: "Section", value: form.section || "—" },
-                    { label: "Uniform", value: form.course || "—" },
                   ].map((row) => (
                     <div
                       key={row.label}

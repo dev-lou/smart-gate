@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
 INSERT INTO system_settings (key, value, description) VALUES
     ('school_name', 'Iloilo State University of Fisheries Science and Technology', 'Institution branding shown in navbars & titles across all apps (dashboard, guard, kiosk)'),
     ('school_initials', 'ISUFST', 'Short initials shown in the logo badge across all apps'),
-    ('face_recognition_threshold', '0.65', 'Minimum cosine similarity for face match (0-1)'),
+    ('face_recognition_threshold', '0.7', 'Minimum cosine similarity for face match (0-1)'),
     ('uniform_detection_enabled', 'true', 'Whether to enforce uniform detection'),
     ('gate_open_duration', '5', 'How long gate stays open (seconds)'),
     ('sync_interval_minutes', '60', 'How often tablet syncs with cloud (minutes)'),

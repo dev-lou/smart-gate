@@ -7,66 +7,6 @@
 
 import { describe, it, expect } from "vitest";
 
-// ─── Uniform course-family matching (mirrors lib/uniform.ts) ──
-
-const COURSE_FAMILIES: Array<[string, string]> = [
-  ["cbmsd", "cbmsd"],
-  ["cici", "cici"],
-  ["coag", "coag"],
-  ["education", "education"],
-];
-
-function familyOf(uniformName: string): string {
-  const n = (uniformName || "").toLowerCase();
-  for (const [marker, family] of COURSE_FAMILIES) {
-    if (n.includes(marker)) return family;
-  }
-  return "";
-}
-
-function wouldGrantAccess(expectedUniform: string, detectedUniform: string): boolean {
-  const expectedFamily = familyOf(expectedUniform);
-  const detectedFamily = familyOf(detectedUniform);
-  return expectedFamily !== "" && expectedFamily === detectedFamily;
-}
-
-describe("course-level uniform matching", () => {
-  it("accepts ANY cici variant for a CICI student (blazer/female/male)", () => {
-    expect(wouldGrantAccess("CICI", "cici_blazer_uniform")).toBe(true);
-    expect(wouldGrantAccess("CICI", "cici_female_uniform")).toBe(true);
-    expect(wouldGrantAccess("CICI", "cici_male_uniform")).toBe(true);
-    // legacy per-type stored values still match their own family
-    expect(wouldGrantAccess("cici_blazer_uniform", "cici_female_uniform")).toBe(true);
-  });
-
-  it("accepts any education / coag / cbmsd variant for their own course", () => {
-    expect(wouldGrantAccess("Education", "education_female_uniform")).toBe(true);
-    expect(wouldGrantAccess("Education", "education_male_uniform")).toBe(true);
-    expect(wouldGrantAccess("COAG", "coag_female_uniform")).toBe(true);
-    expect(wouldGrantAccess("COAG", "coag_male_uniform")).toBe(true);
-    expect(wouldGrantAccess("CBMSD", "cbmsd_chef_male_uniform")).toBe(true);
-    expect(wouldGrantAccess("CBMSD", "cbmsd_universal_male_uniform")).toBe(true);
-  });
-
-  it("DENIES a CICI student wearing a COAG/Education/CBMSD uniform", () => {
-    expect(wouldGrantAccess("CICI", "coag_female_uniform")).toBe(false);
-    expect(wouldGrantAccess("CICI", "education_male_uniform")).toBe(false);
-    expect(wouldGrantAccess("CICI", "cbmsd_chef_male_uniform")).toBe(false);
-  });
-
-  it("DENIES cross-course swaps in every direction", () => {
-    expect(wouldGrantAccess("COAG", "cici_blazer_uniform")).toBe(false);
-    expect(wouldGrantAccess("Education", "coag_male_uniform")).toBe(false);
-    expect(wouldGrantAccess("CBMSD", "cici_male_uniform")).toBe(false);
-  });
-
-  it("fails closed for unmapped types (no course / unknown)", () => {
-    expect(wouldGrantAccess("default", "cici_blazer_uniform")).toBe(false);
-    expect(wouldGrantAccess("", "cici_blazer_uniform")).toBe(false);
-    expect(wouldGrantAccess("CICI", "unknown_style")).toBe(false);
-  });
-});
-
 // ─── Cosine Similarity ─────────────────────────────────────
 
 function cosineSimilarity(a: Float32Array, b: Float32Array): number {
@@ -306,138 +246,9 @@ describe("parsePhotoUrls", () => {
   });
 });
 
-// ─── Non-Maximum Suppression ────────────────────────────────
-
-interface YoloDetection {
-  bbox: [number, number, number, number]; // [x, y, w, h] normalized
-  classId: number;
-  confidence: number;
-}
-
-function calculateIoU(
-  a: [number, number, number, number],
-  b: [number, number, number, number],
-): number {
-  const [ax, ay, aw, ah] = a;
-  const [bx, by, bw, bh] = b;
-
-  const ax1 = ax,
-    ay1 = ay,
-    ax2 = ax + aw,
-    ay2 = ay + ah;
-  const bx1 = bx,
-    by1 = by,
-    bx2 = bx + bw,
-    by2 = by + bh;
-
-  const x1 = Math.max(ax1, bx1);
-  const y1 = Math.max(ay1, by1);
-  const x2 = Math.min(ax2, bx2);
-  const y2 = Math.min(ay2, by2);
-
-  const intersection = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
-  const areaA = aw * ah;
-  const areaB = bw * bh;
-  const union = areaA + areaB - intersection;
-
-  return union > 0 ? intersection / union : 0;
-}
-
-function nonMaxSuppression(detections: YoloDetection[], iouThreshold: number): YoloDetection[] {
-  if (detections.length <= 1) return detections;
-
-  const sorted = [...detections].sort((a, b) => b.confidence - a.confidence);
-  const result: YoloDetection[] = [];
-
-  while (sorted.length > 0) {
-    const best = sorted.shift()!;
-    result.push(best);
-
-    for (let i = sorted.length - 1; i >= 0; i--) {
-      const iou = calculateIoU(best.bbox, sorted[i].bbox);
-      if (iou > iouThreshold) {
-        sorted.splice(i, 1);
-      }
-    }
-  }
-
-  return result;
-}
-
-describe("calculateIoU", () => {
-  it("returns 1.0 for identical boxes", () => {
-    expect(calculateIoU([0.1, 0.1, 0.8, 0.8], [0.1, 0.1, 0.8, 0.8])).toBeCloseTo(1.0, 5);
-  });
-
-  it("returns 0 for non-overlapping boxes", () => {
-    expect(calculateIoU([0, 0, 0.3, 0.3], [0.7, 0.7, 0.3, 0.3])).toBe(0);
-  });
-
-  it("returns correct IoU for partially overlapping boxes", () => {
-    // Box A: [0, 0, 1, 1] → area = 1
-    // Box B: [0.5, 0, 1, 1] → area = 1
-    // Intersection: [0.5, 0, 0.5, 1] → area = 0.5
-    // IoU = 0.5 / (1 + 1 - 0.5) = 0.5 / 1.5 = 0.333
-    const iou = calculateIoU([0, 0, 1, 1], [0.5, 0, 1, 1]);
-    expect(iou).toBeCloseTo(1 / 3, 5);
-  });
-
-  it("handles one box inside another", () => {
-    // Box A: [0, 0, 1, 1] → area = 1
-    // Box B: [0.2, 0.2, 0.3, 0.3] → area = 0.09
-    // Intersection = 0.09
-    // IoU = 0.09 / (1 + 0.09 - 0.09) = 0.09
-    const iou = calculateIoU([0, 0, 1, 1], [0.2, 0.2, 0.3, 0.3]);
-    expect(iou).toBeCloseTo(0.09, 5);
-  });
-});
-
-describe("nonMaxSuppression", () => {
-  it("returns single detection as-is", () => {
-    const dets: YoloDetection[] = [{ bbox: [0.1, 0.1, 0.5, 0.5], classId: 0, confidence: 0.9 }];
-    expect(nonMaxSuppression(dets, 0.5)).toHaveLength(1);
-  });
-
-  it("removes overlapping detections of same class", () => {
-    const dets: YoloDetection[] = [
-      { bbox: [0.1, 0.1, 0.5, 0.5], classId: 0, confidence: 0.9 },
-      { bbox: [0.15, 0.15, 0.5, 0.5], classId: 0, confidence: 0.8 },
-    ];
-    const result = nonMaxSuppression(dets, 0.5);
-    expect(result).toHaveLength(1);
-    expect(result[0].confidence).toBe(0.9);
-  });
-
-  it("keeps non-overlapping detections", () => {
-    const dets: YoloDetection[] = [
-      { bbox: [0, 0, 0.3, 0.3], classId: 0, confidence: 0.9 },
-      { bbox: [0.7, 0.7, 0.3, 0.3], classId: 0, confidence: 0.8 },
-    ];
-    const result = nonMaxSuppression(dets, 0.5);
-    expect(result).toHaveLength(2);
-  });
-
-  it("keeps high-confidence detection over low-confidence overlap", () => {
-    const dets: YoloDetection[] = [
-      { bbox: [0.1, 0.1, 0.5, 0.5], classId: 0, confidence: 0.6 },
-      { bbox: [0.12, 0.12, 0.5, 0.5], classId: 0, confidence: 0.95 },
-    ];
-    const result = nonMaxSuppression(dets, 0.3);
-    expect(result).toHaveLength(1);
-    expect(result[0].confidence).toBe(0.95);
-  });
-});
-
 // ─── Settings Parsing ───────────────────────────────────────
 
 describe("settings parsing", () => {
-  it("correctly parses uniform_detection_enabled from settings", () => {
-    const enabled: string = "true";
-    const disabled: string = "false";
-    expect(enabled === "true").toBe(true);
-    expect(disabled === "true").toBe(false);
-  });
-
   it("correctly parses face_recognition_threshold", () => {
     const parsed = parseFloat("0.6");
     expect(parsed).toBe(0.6);
@@ -700,6 +511,7 @@ describe("isBenignWasmLog", () => {
 import {
   CONFIRM_TICKS,
   MARGIN_MIN,
+  UNKNOWN_ABSENCE_CLEAR_MS,
   PERSON_COOLDOWN_MS,
   PERSON_REDECIDE_MS,
   REARM_ABSENCE_MS,
@@ -712,6 +524,7 @@ import {
   isSettledUnknown,
   nextPresence,
   resolveGateOutcome,
+  shouldClearStaleScan,
   shouldDecide,
   visitGeneration,
 } from "../scanPolicy";
@@ -1015,6 +828,29 @@ describe("scan policy — anti-false-accept confirmation", () => {
     expect(identityConfirmed(state, MARGIN_MIN)).toBe(true);
   });
 
+  it("holds the student through the full 1-2-3 count before confirming", () => {
+    // At ~500ms per tick, CONFIRM_TICKS must cover a real 1-2-3 hold-still.
+    expect(CONFIRM_TICKS).toBeGreaterThanOrEqual(4);
+    let state = confirmIdentity({ id: null, count: 0 }, "student-a", true);
+    for (let i = 1; i < CONFIRM_TICKS - 1; i++) {
+      state = confirmIdentity(state, "student-a", true);
+    }
+    expect(identityConfirmed(state, 1)).toBe(false);
+    state = confirmIdentity(state, "student-a", true);
+    expect(identityConfirmed(state, 1)).toBe(true);
+  });
+
+  it("a tight lookalike race below the margin stays unknown", () => {
+    // Winner 0.71 vs runner-up 0.70 at the 0.70 threshold: scores pass but
+    // the margin does not — still no name, still no grant.
+    let state = confirmIdentity({ id: null, count: 0 }, "student-a", true);
+    for (let i = 1; i < CONFIRM_TICKS + 2; i++) {
+      state = confirmIdentity(state, "student-a", true);
+    }
+    expect(identityConfirmed(state, MARGIN_MIN - 0.01)).toBe(false);
+    expect(identityConfirmed(state, MARGIN_MIN)).toBe(true);
+  });
+
   it("a flickering identity never confirms", () => {
     // Stranger alternates between two enrolled lookalikes every tick.
     let state = confirmIdentity({ id: null, count: 0 }, "student-a", true);
@@ -1039,6 +875,33 @@ describe("scan policy — anti-false-accept confirmation", () => {
     state = confirmIdentity(state, null, false);
     expect(identityConfirmed(state, 1)).toBe(false);
     expect(state).toEqual({ id: null, count: 0 });
+  });
+});
+
+describe("scan policy — stale-scan reset", () => {
+  // The reported bug: a stranger walks off and the amber UNKNOWN card keeps
+  // accusing an empty gate — then the next arrival inherits a stale dwell
+  // clock. Two seconds of true empty frame must reset everything.
+  it("keeps the unknown card while the visitor is still in frame", () => {
+    expect(shouldClearStaleScan({ faceFreeSince: 0, now: 60_000 })).toBe(false);
+  });
+
+  it("a blink does not reset the scan", () => {
+    expect(
+      shouldClearStaleScan({ faceFreeSince: 1000, now: 1000 + UNKNOWN_ABSENCE_CLEAR_MS - 1 }),
+    ).toBe(false);
+  });
+
+  it("retires the stale scan once the frame sits empty", () => {
+    expect(
+      shouldClearStaleScan({ faceFreeSince: 1000, now: 1000 + UNKNOWN_ABSENCE_CLEAR_MS }),
+    ).toBe(true);
+  });
+
+  it("needs a real multi-second absence by default", () => {
+    expect(UNKNOWN_ABSENCE_CLEAR_MS).toBe(2_000);
+    expect(shouldClearStaleScan({ faceFreeSince: 5000, now: 6500 })).toBe(false);
+    expect(shouldClearStaleScan({ faceFreeSince: 5000, now: 7000 })).toBe(true);
   });
 });
 

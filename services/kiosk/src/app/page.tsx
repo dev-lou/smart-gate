@@ -15,14 +15,6 @@ import {
   type MatchResult,
 } from "@/lib/face";
 import {
-  checkUniform,
-  initUniformDetector,
-  cleanupUniformDetector,
-  isYoloModelLoaded,
-  torsoRegion,
-  type UniformCheckResult,
-} from "@/lib/uniform";
-import {
   connectToGate,
   tryAutoConnect,
   disconnectGate,
@@ -38,9 +30,12 @@ import {
   LAST_RESULT_HOLD_MS,
   NOTICE_WINDOW_MS,
   NOTICE_ABSENCE_CLEAR_MS,
+  UNKNOWN_ABSENCE_CLEAR_MS,
   VERDICT_HOLD_MS,
   clampGateWindow,
+  CONFIRM_TICKS,
   confirmIdentity,
+  shouldClearStaleScan,
   EMPTY_CONFIRM,
   gateStateForLog,
   identityConfirmed,
@@ -62,7 +57,9 @@ import {
   getDatabaseStats,
   getSetting,
   storeSetting,
+  getUnsyncedLogs,
   type StoredStudent,
+  type StoredLog,
 } from "@/lib/db";
 import { fullSync, initSupabase } from "@/lib/supabase";
 import {
@@ -84,11 +81,13 @@ import {
   CheckCircle2,
   Settings,
   Volume2,
+  Play,
   Scan,
   Sparkles,
+  Database,
   Clock,
   Lock,
-  Shirt,
+  Ticket,
   UserCheck,
   ArrowRight,
   Cpu,
@@ -115,7 +114,7 @@ type KioskState =
  *   uniform   → identity matched, reading the uniform
  *   done      → a verdict was reached (grant/deny card takes over)
  */
-type ScanStep = "searching" | "face" | "uniform" | "done";
+type ScanStep = "searching" | "face" | "verify" | "done";
 
 /** Visual state of one step in the on-screen scan pipeline. */
 type StepVisual = "idle" | "working" | "ok" | "fail";
@@ -290,7 +289,7 @@ function ScanStepPill({ label, state }: { label: string; state: StepVisual }) {
   };
   return (
     <span
-      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/55 backdrop-blur-md shadow-sm text-[10px] sm:text-xs font-black uppercase tracking-wider ${styles[state]}`}
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white/90 backdrop-blur-md shadow-sm text-[10px] sm:text-xs font-black uppercase tracking-wider ${styles[state]}`}
     >
       {state === "working" ? (
         <RefreshCw className="w-3.5 h-3.5 animate-spin" />
@@ -303,6 +302,61 @@ function ScanStepPill({ label, state }: { label: string; state: StepVisual }) {
       )}
       {label}
     </span>
+  );
+}
+
+/**
+ * Persistent plain-language policy readout for the live rail.
+ * Waiting while no identity is confirmed yet, verifying while the face
+ * dwell runs, then the hold notice once a decision owns the screen.
+ * Display only — it never feeds back into the recognition pipeline.
+ */
+function PolicyReadout({
+  scanStep,
+  holdNotice,
+}: {
+  scanStep: ScanStep;
+  holdNotice: {
+    kind: "granted" | "denied";
+    name: string;
+    at: number;
+    personId?: string;
+    detail?: string;
+  } | null;
+}) {
+  let text: string;
+  let tone: string;
+  let pulse = false;
+  // A decision owns the screen: never show a "still working" phase under a
+  // verdict notice — the phase state goes stale the moment the card clears
+  // (scanStep is reset separately) and the two messages contradict each
+  // other ("Access denied" next to a pulsing "Reading uniform").
+  if (holdNotice) {
+    if (holdNotice.kind === "denied") {
+      text = holdNotice.detail ?? "Access denied — see the guard";
+      tone = "text-rose-600";
+    } else {
+      text = "Already recorded — no need to re-scan";
+      tone = "text-emerald-700";
+    }
+  } else if (scanStep === "face") {
+    text = "Verifying — hold still";
+    tone = "text-blue-700";
+    pulse = true;
+  } else if (scanStep === "done") {
+    text = "Policy: face + pass check";
+    tone = "text-surface-500";
+  } else {
+    text = "Policy: waiting for face…";
+    tone = "text-surface-500";
+  }
+  return (
+    <p
+      className={`max-w-full rounded-lg bg-white/90 backdrop-blur-md px-2.5 py-1 text-[11px] font-bold leading-snug shadow-sm flex items-center gap-1.5 ${tone} ${pulse ? "animate-pulse" : ""}`}
+    >
+      <Scan className="w-3.5 h-3.5 shrink-0" />
+      <span className="min-w-0">{text}</span>
+    </p>
   );
 }
 
@@ -328,7 +382,6 @@ export default function KioskPage() {
     missing: [] as string[],
   });
   const [lastMatch, setLastMatch] = useState<MatchResult | null>(null);
-  const [lastUniform, setLastUniform] = useState<UniformCheckResult | null>(null);
   const [scanStep, setScanStep] = useState<ScanStep>("searching");
   const [fps, setFps] = useState(0);
   const [gateConnected, setGateConnected] = useState(false);
@@ -343,9 +396,30 @@ export default function KioskPage() {
   /** Survives the verdict card so the screen still shows what just happened. */
   const [lastDecision, setLastDecision] = useState<{
     name: string;
+    personId: string | null;
     granted: boolean;
     at: number;
   } | null>(null);
+  /**
+   * The confirmed identity — the ONLY name the HUD is allowed to show.
+   * Recognition ticks update a raw per-tick winner that flickers between
+   * lookalikes on motion-blurred frames; publishing that raw winner is how a
+   * stranger briefly wore someone else's name. `confirmed` is set only once
+   * an identity passes the full confirmation gate (CONFIRM_TICKS consecutive
+   * wins + runner-up margin) and is cleared the moment a different face — or
+   * no face — is in frame.
+   */
+  const [confirmed, setConfirmed] = useState<{
+    id: string;
+    name: string;
+    confidence: number;
+  } | null>(null);
+  /** Loop-safe mirror of `confirmed` for drawOverlays + processFace. */
+  const confirmedRef = useRef<{ id: string; name: string; confidence: number } | null>(null);
+  /** Confirmation progress for the "hold still 1-2-3" HUD countdown. */
+  const [confirmProgress, setConfirmProgress] = useState(0);
+  const [lockdownActive, setLockdownActive] = useState(false);
+  const [lockdownReason, setLockdownReason] = useState("");
   /**
    * What to tell someone whose decision is already in the books.
    *
@@ -369,6 +443,11 @@ export default function KioskPage() {
   const [started, setStarted] = useState(false);
   const [showSplash, setShowSplash] = useState(true);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
+  /** Offline queue modal: every access row waiting in IndexedDB for upload. */
+  const [showQueueModal, setShowQueueModal] = useState(false);
+  const [queueLogs, setQueueLogs] = useState<StoredLog[]>([]);
+  const [queueLoading, setQueueLoading] = useState(false);
+  const [queueSyncing, setQueueSyncing] = useState(false);
   /** Camera never came up (no webcam / permission denied). The terminal keeps
    *  running so the gate, servo and button can still be tested. */
   const [cameraDown, setCameraDown] = useState(false);
@@ -422,14 +501,17 @@ export default function KioskPage() {
   // Tracking refs for performance
   const enrolledRef = useRef<EnrolledFace[]>([]);
   const settingsRef = useRef<{
-    uniformEnabled: boolean;
     matchThreshold: number;
     /** Gate open window from Settings — how long the barrier stays released. */
     gateOpenDuration: number;
+    /** 015 lockdown: when true deny all with LOCKDOWN_ACTIVE. */
+    lockdownMode: boolean;
+    lockdownReason: string;
   }>({
-    uniformEnabled: true,
-    matchThreshold: 0.65,
+    matchThreshold: 0.7,
     gateOpenDuration: 5,
+    lockdownMode: false,
+    lockdownReason: "",
   });
   const settingsLoadedRef = useRef(false);
 
@@ -446,7 +528,6 @@ export default function KioskPage() {
   const lastFacesRef = useRef<FaceResult[]>([]);
   const lastFaceAtRef = useRef(0);
   const lastRecognizedAtRef = useRef(0);
-  const lastUniformRef = useRef<UniformCheckResult | null>(null);
   const processingRef = useRef(false); // Prevents concurrent face processing
   const photoProcessingRef = useRef(false); // 🔴 FIX BUG #2: Mutex for processStudentPhotos
   const gateCleanupRef = useRef<(() => void) | null>(null); // Fix #3: Gate listener cleanup
@@ -487,7 +568,6 @@ export default function KioskPage() {
   const [verdict, setVerdict] = useState<{
     person: EnrolledFace;
     confidence: number;
-    uniform: UniformCheckResult | null;
     isGuest: boolean;
   } | null>(null);
   /**
@@ -507,12 +587,6 @@ export default function KioskPage() {
     personId?: string;
     detail?: string;
   } | null>(null);
-
-  // Keep the overlay ref in lockstep with the uniform result — the animation
-  // loop reads refs so it never has to be re-created when a check completes.
-  useEffect(() => {
-    lastUniformRef.current = lastUniform;
-  }, [lastUniform]);
 
   // Tick the gate-open countdown down once a second, and retire the banner the
   // moment the configured window elapses — the barrier closing is a real event
@@ -549,8 +623,8 @@ export default function KioskPage() {
    * Called for every logged decision so the screen still carries a trace once
    * the big card clears and the student has walked away.
    */
-  function rememberDecision(name: string, granted: boolean) {
-    setLastDecision({ name, granted, at: Date.now() });
+  function rememberDecision(name: string, personId: string | null, granted: boolean) {
+    setLastDecision({ name, personId, granted, at: Date.now() });
     if (lastDecisionTimerRef.current) clearTimeout(lastDecisionTimerRef.current);
     lastDecisionTimerRef.current = setTimeout(() => setLastDecision(null), LAST_RESULT_HOLD_MS);
   }
@@ -596,11 +670,9 @@ export default function KioskPage() {
       setKioskState("loading_models");
       setStatusMessage("Loading face detection model...");
 
-      // 1. Load AI models
-      const [faceDetectorLoaded, uniformLoaded] = await Promise.all([
-        initFaceDetector().catch(() => false),
-        initUniformDetector().catch(() => false),
-      ]);
+      // 1. Load AI models — face only. Uniform vision was retired, so boot
+      // stays fast with no second model to download.
+      const faceDetectorLoaded = await initFaceDetector().catch(() => false);
 
       if (!faceDetectorLoaded) {
         setStatusMessage("⚠️ Face detector failed to load");
@@ -778,9 +850,9 @@ export default function KioskPage() {
         if (kioskStateRef.current === "ready" || kioskStateRef.current === "scanning") {
           if (faces.length > 0) {
             // Advance to "face" but never regress a phase that is already
-            // deeper into the pipeline (identity/uniform), which would make
+            // deeper into the pipeline (verify/done), which would make
             // the HUD flicker backwards while a check is running.
-            setScanStep((prev) => (prev === "uniform" || prev === "done" ? prev : "face"));
+            setScanStep((prev) => (prev === "verify" || prev === "done" ? prev : "face"));
           } else if (Date.now() - lastFaceAtRef.current > 900) {
             // Nobody in frame — back to looking, so a stale verdict never sits
             // on screen after the person walks away.
@@ -818,6 +890,23 @@ export default function KioskPage() {
       });
       faceFreeSinceRef.current = presence.faceFreeSince;
       frameClearedRef.current = presence.rearmed;
+
+      // ─── Stale-scan reset ─────────────────────────────
+      // The frame has been truly empty for a beat: whoever was standing here
+      // walked on. Take down a settled "unknown face" card, drop any
+      // half-built confirmation, and restart the unknown dwell clock — the
+      // next arrival must be read as someone new, never inherit the last
+      // visitor's verdict-in-progress.
+      if (shouldClearStaleScan({ faceFreeSince: faceFreeSinceRef.current, now: Date.now() })) {
+        unknownSinceRef.current = 0;
+        confirmRef.current = { ...EMPTY_CONFIRM };
+        setConfirmProgress(0);
+        if (confirmedRef.current) {
+          confirmedRef.current = null;
+          setConfirmed(null);
+        }
+        setUnknownNotice(null);
+      }
 
       // The decision notice is retired by WHO is on screen now, not just by
       // the clock. It lives its full one-minute window while its own student
@@ -920,8 +1009,8 @@ export default function KioskPage() {
     });
 
     // Publish the phase for the on-screen pipeline: identity is resolved, so
-    // either we are about to read the uniform or this face is unknown.
-    setScanStep(match.matched ? "uniform" : settledUnknown ? "done" : "face");
+    // either we are verifying the decision or this face is unknown.
+    setScanStep(match.matched ? "verify" : settledUnknown ? "done" : "face");
 
     // ─── Unknown-visitor notice (settled, still no match) ──
     // Surfaced here — ahead of every early-return below — so a stranger always
@@ -940,19 +1029,42 @@ export default function KioskPage() {
       setUnknownNotice(null);
     }
 
+    // ─── Confirmed-identity maintenance ─────────────────
+    // lastMatch is a raw per-tick winner and flickers between lookalikes; it
+    // must never drive a name on screen by itself. `confirmed` is the only
+    // identity the HUD may name, and it survives only while the same face
+    // keeps winning.
+    const liveId = match.matched && match.person ? match.person.id : null;
+    if (confirmedRef.current && liveId !== confirmedRef.current.id) {
+      confirmedRef.current = null;
+      setConfirmed(null);
+    }
     // ─── Anti-false-accept confirmation gate ────────────
     // One hot frame is not a verdict: the same identity must win consecutive
     // ticks AND stand clear of the runner-up before the decision pipeline
-    // (uniform → verdict → log → gate) may run. Until then the HUD already
-    // tracks the face above — this only withholds the grant.
+    // (verdict → log → gate) may run. Until then the HUD shows a
+    // nameless "verifying" state — this only withholds the grant.
     confirmRef.current = confirmIdentity(
       confirmRef.current,
       match.matched && match.person ? match.person.id : null,
       match.matched,
     );
+    setConfirmProgress(confirmRef.current.count);
     const margin = match.runnerUp < 0 ? 1 : match.confidence - match.runnerUp;
-    if (!identityConfirmed(confirmRef.current, margin)) {
+if (!identityConfirmed(confirmRef.current, margin)) {
       return;
+    }
+
+    // The identity held steady through the full 1-2-3 count with daylight to
+    // the runner-up: THIS is the name the HUD is allowed to show.
+    if (match.person && (!confirmedRef.current || confirmedRef.current.id !== match.person.id)) {
+      const c = {
+        id: match.person.id,
+        name: match.person.name,
+        confidence: match.confidence,
+      };
+      confirmedRef.current = c;
+      setConfirmed(c);
     }
 
     // ─── Per-identity decision gate ─────────────────────
@@ -985,7 +1097,6 @@ export default function KioskPage() {
     if (match.matched && match.person) {
       const prev = lastDecisionByPersonRef.current.get(match.person.id);
       if (prev?.granted && isRepeatDecision({ lastDecisionAt: prev.at, now: Date.now() })) {
-        setLastUniform(null);
         setHoldNotice({
           kind: "granted",
           name: match.person.name,
@@ -996,20 +1107,33 @@ export default function KioskPage() {
       }
     }
 
-    // Check uniform if matched — guests skip it (no uniform requirement)
-    const isGuestMatch = match.matched && match.person?.uniform_type === "guest";
-    let uniformCheck: UniformCheckResult | null = null;
-    if (match.matched && match.person && settingsRef.current.uniformEnabled && !isGuestMatch) {
-      uniformCheck = await checkUniform(video, face.bbox, match.person.uniform_type, canvas);
-      setLastUniform(uniformCheck);
-    } else {
-      setLastUniform(null);
-    }
+    // Guests are flagged by their uniform_type marker (data convention only).
+    const isGuestMatch = match.matched && match.person?.uniform_type === 'guest';
 
-    // Determine access
-    const accessGranted =
-      match.matched &&
-      (isGuestMatch || !settingsRef.current.uniformEnabled || uniformCheck?.ok === true);
+    // Determine access (016 policy: lockdown > guest expiry > face+policy).
+    // Uniform vision is retired: a face match plus a live guest pass (or no
+    // pass needed for students) is the whole policy.
+    const locked = settingsRef.current.lockdownMode;
+    let guestExpired = false;
+    let guestExpiryLabel = '';
+    if (isGuestMatch) {
+      const raw = (match.person as { valid_until?: string | null })?.valid_until;
+      if (raw) {
+        const t = Date.parse(raw);
+        if (!Number.isNaN(t) && Date.now() > t) {
+          guestExpired = true;
+          guestExpiryLabel = new Date(t).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+        }
+      }
+    }
+    const denyReason = !match.matched
+      ? null
+      : locked
+        ? { code: 'LOCKDOWN_ACTIVE', note: settingsRef.current.lockdownReason ? `Campus lockdown — ${settingsRef.current.lockdownReason}` : 'Campus lockdown — see guard' }
+        : guestExpired
+          ? { code: 'GUEST_EXPIRED', note: `Guest pass expired${guestExpiryLabel ? ` ${guestExpiryLabel}` : ''} — see guard to renew` }
+          : null;
+    const accessGranted = match.matched && !denyReason;
 
     if (accessGranted) {
       // Grant access — the card timer must know it owns the screen (a new
@@ -1024,7 +1148,6 @@ export default function KioskPage() {
       setVerdict({
         person: match.person!,
         confidence: match.confidence,
-        uniform: uniformCheck,
         isGuest: isGuestMatch,
       });
 
@@ -1070,7 +1193,7 @@ export default function KioskPage() {
       });
       if (!isRepeatGrant)
         lastDecisionByPersonRef.current.set(match.person!.id, { at: grantedAt, granted: true });
-      rememberDecision(match.person!.name, true);
+      rememberDecision(match.person!.name, match.person!.id, true);
       setHoldNotice({
         kind: "granted",
         name: match.person!.name,
@@ -1078,8 +1201,15 @@ export default function KioskPage() {
         personId: match.person!.id,
       });
 
-      // Log access (with gate feedback result)
+      // Log access (015 explainable: reason_code + decision_note)
       if (!isRepeatGrant) {
+        const passNote = isGuestMatch
+          ? (() => {
+            const p = match.person as { host_name?: string | null; valid_until?: string | null };
+            const exp = p.valid_until ? ` valid until ${new Date(p.valid_until).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "";
+            return `Guest pass${p.host_name ? ` host ${p.host_name}` : ""}${exp} — face verified`;
+          })()
+          : "Face verified — policy check passed";
         await addLog({
           person_id: match.person!.id,
           person_name: match.person!.name,
@@ -1088,12 +1218,10 @@ export default function KioskPage() {
           method: "face",
           success: true,
           confidence: match.confidence,
-          uniform_ok: isGuestMatch ? null : (uniformCheck?.ok ?? null),
-          failure_reason: isGuestMatch
-            ? "Granted — guest, uniform check skipped"
-            : uniformCheck
-              ? `Uniform verified — ${uniformCheck.detail}`
-              : "Granted — uniform check disabled in settings",
+          failure_reason: passNote,
+          reason_code: isGuestMatch ? "GUEST_PASS_VALID" : "POLICY_PASS",
+          decision_note: passNote,
+          client_id: "kiosk-01",
           gate_state: gateStateForLog({
             gateConnected: gateConnectedNow,
             confirmed: gateConfirmed,
@@ -1120,8 +1248,9 @@ export default function KioskPage() {
         setKioskState("ready");
         setStatusMessage("Ready");
         setLastMatch(null);
-        setLastUniform(null);
         setVerdict(null);
+        // Reset the phase so the rail never sticks on a stale step while idle.
+        setScanStep("searching");
         // The barrier banner outlives the verdict card when the configured
         // open window is longer than the card hold — clear it only once the
         // window has actually elapsed (the countdown effect handles the rest).
@@ -1130,20 +1259,21 @@ export default function KioskPage() {
           setGateSecondsLeft(null);
         }
       }, VERDICT_HOLD_MS);
-    } else if (match.matched && uniformCheck && !uniformCheck.ok) {
-      // Denied due to uniform — policy feedback only, no personal data
+    } else if (match.matched && denyReason) {
+      // Denied by policy: lockdown > expired pass.
+      const detail = denyReason.note;
+      const code = denyReason.code;
       const cardToken = ++decisionSeqRef.current;
       setKioskState("denied");
       playCue("deny");
-      setStatusMessage(uniformCheck.detail);
+      setStatusMessage(detail);
       setVerdict({
         person: match.person!,
         confidence: match.confidence,
-        uniform: uniformCheck,
         isGuest: false,
       });
 
-      // Same duplicate guard as a grant: a failed uniform check must not be
+      // Same duplicate guard as a grant: a denial must not be
       // re-logged every few seconds while the student stands there. The
       // decision starts a new stay for this identity.
       frameClearedRef.current = false;
@@ -1154,13 +1284,13 @@ export default function KioskPage() {
       });
       if (!isRepeatDenial)
         lastDecisionByPersonRef.current.set(match.person!.id, { at: deniedAt, granted: false });
-      rememberDecision(match.person!.name, false);
+      rememberDecision(match.person!.name, match.person!.id, false);
       setHoldNotice({
         kind: "denied",
         name: match.person!.name,
         at: deniedAt,
         personId: match.person!.id,
-        detail: uniformCheck.detail,
+        detail,
       });
 
       if (!isRepeatDenial) {
@@ -1172,8 +1302,10 @@ export default function KioskPage() {
           method: "face",
           success: false,
           confidence: match.confidence,
-          uniform_ok: false,
-          failure_reason: uniformCheck.detail,
+          failure_reason: detail,
+          reason_code: code,
+          decision_note: detail,
+          client_id: "kiosk-01",
           device_timestamp: new Date().toISOString(),
         }).catch((err) => console.warn("[Kiosk] Log write failed:", err));
       }
@@ -1187,18 +1319,23 @@ export default function KioskPage() {
           setKioskState("ready");
           setStatusMessage("Ready");
           setLastMatch(null);
-          setLastUniform(null);
           setVerdict(null);
+          // Same stuck-phase fix as the grant path.
+          setScanStep("searching");
         }
       }, 4000);
     } else {
-      // Unreachable while the confirmation gate above holds (confirmed implies
-      // matched), kept as a safety net. The unknown notice + beep already ran
-      // ahead of the gates. Never talk to strangers: no voice, no name.
-      setKioskState("ready");
-      setStatusMessage("Scanning...");
+      // Safety net for unconfirmed ticks (a stranger still settling). It must
+      // NEVER clobber a verdict hold: recognition
+      // keeps running while a grant/deny card owns the screen, and a new face
+      // stepping in behind the decided student used to yank their card away
+      // mid-hold via this branch. Only touch idle states.
+      if (kioskStateRef.current !== "granted" && kioskStateRef.current !== "denied") {
+        setKioskState("ready");
+        setStatusMessage("Scanning...");
+      }
       // Deliberately no audit row here. access_logs records identified
-      // students — granted, or denied for uniform — and nothing else; an
+      // students — granted, or denied by policy — and nothing else; an
       // unreadable face is not an access attempt by a known identity. This
       // branch must also never touch the re-arm lock: an unknown face is not
       // a decision, and locking here deadlocked the scanner (the person could
@@ -1216,10 +1353,6 @@ export default function KioskPage() {
    *   1. no face  → animated face oval + "position your face" guidance
    *   2. face     → reticle around the detected face + detection confidence,
    *                 with a sweeping scan line while it works
-   *   3. uniform  → a second reticle on the winning YOLO detection (the
-   *                 garment itself) with its class label + confidence,
-   *                 green when it matches the course and red when it doesn't
-   *
    * Reads refs only (this runs inside the rAF loop) and is privacy-safe:
    * labels carry detector telemetry, never a name.
    */
@@ -1235,7 +1368,6 @@ export default function KioskPage() {
     const now = Date.now();
     const state = kioskStateRef.current;
     const match = lastMatchRef.current;
-    const uniform = lastUniformRef.current;
     const verifying = state === "ready" || state === "scanning";
 
     // Hold the reticle briefly after a detection miss (blinks, head turns) so
@@ -1287,10 +1419,16 @@ export default function KioskPage() {
       const bw = w * W;
       const bh = h * H;
 
+      // Green brackets are earned, not guessed: only a CONFIRMED identity
+      // (full hold-still count + runner-up margin) lights the frame green. A
+      // raw per-tick winner stays blue until it confirms — a stranger
+      // flickering between lookalikes must never see a green "you" signal.
+      const confirmedLive =
+        match?.matched === true && match.person?.id === confirmedRef.current?.id;
       const rgb =
         state === "denied"
           ? "244, 63, 94"
-          : state === "granted" || match?.matched
+          : state === "granted" || confirmedLive
             ? "16, 185, 129"
             : "96, 165, 250";
 
@@ -1336,87 +1474,6 @@ export default function KioskPage() {
         ctx.stroke();
       }
     }
-
-    // ── 2b. Torso scan band: the region actually fed to YOLO ──
-    // checkUniform() crops this band under the chin and letterboxes it to
-    // 640x640. Drawing it faintly answers "what is the uniform AI looking
-    // at?" and shows the student where to hold their torso in frame.
-    if (verifying && faces.length > 0) {
-      const biggest = faces.reduce((a, b) =>
-        a.bbox[2] * a.bbox[3] > b.bbox[2] * b.bbox[3] ? a : b,
-      );
-      const band = torsoRegion(biggest.bbox, { videoWidth: W, videoHeight: H });
-      const tx = Math.max(0, Math.min(W - 1, band.x));
-      const ty = Math.max(0, Math.min(H - 1, band.y));
-      const tw = Math.max(1, Math.min(W - tx, band.width));
-      const th = Math.max(1, Math.min(H - ty, band.height));
-      if (tw > 4 && th > 4) {
-        ctx.save();
-        ctx.setLineDash([unit * 1.1, unit * 1.1]);
-        ctx.strokeStyle = "rgba(148, 163, 184, 0.55)";
-        ctx.lineWidth = Math.max(1.5, unit * 0.22);
-        ctx.strokeRect(tx, ty, tw, th);
-        ctx.restore();
-        drawChip(
-          ctx,
-          tx,
-          Math.max(unit * 7, ty - unit * 1.2),
-          "UNIFORM SCAN AREA",
-          "148, 163, 184",
-          "left",
-          Math.max(11, unit * 1.5),
-        );
-      }
-    }
-
-    // ── 3. Uniform reticle on the winning YOLO detection ──
-    // The box survives into the verdict hold so the recorded decision stays
-    // anchored to what the model actually saw.
-    const showVerdict = state === "granted" || state === "denied";
-    const uniformBox = verifying || showVerdict ? uniform?.bbox : undefined;
-    if (uniformBox) {
-      const [ux, uy, uw, uh] = uniformBox;
-      const bx = ux * W;
-      const by = uy * H;
-      const bw = uw * W;
-      const bh = uh * H;
-      const rgb = uniform!.ok ? "16, 185, 129" : "244, 63, 94";
-
-      ctx.save();
-      ctx.setLineDash([unit * 1.6, unit * 1.2]);
-      ctx.strokeStyle = `rgba(${rgb}, 0.5)`;
-      ctx.lineWidth = Math.max(2, unit * 0.3);
-      ctx.strokeRect(bx, by, bw, bh);
-      ctx.restore();
-      drawBrackets(ctx, bx, by, bw, bh, rgb, 1, Math.max(4, unit * 0.8), Math.min(bw, bh) * 0.3);
-
-      const garment = (uniform!.detectedType || "uniform")
-        .replace(/_/g, " ")
-        .replace(/\buniform\b/i, "")
-        .trim()
-        .toUpperCase();
-      drawChip(
-        ctx,
-        bx,
-        Math.max(unit * 7, by - unit * 1.5),
-        `${uniform!.ok ? "\u2713" : "\u2715"} ${garment} \u00b7 ${Math.round(uniform!.confidence * 100)}%`,
-        rgb,
-        "left",
-        Math.max(12, unit * 1.8),
-      );
-    } else if (verifying && match?.matched && uniform && !uniform.bbox) {
-      // Identity matched but the model found no garment to score: tell the
-      // person what to do instead of silently denying them.
-      drawChip(
-        ctx,
-        W / 2,
-        H - unit * 4,
-        "NO UNIFORM VISIBLE \u2014 STEP BACK SO YOUR TORSO IS IN FRAME",
-        "244, 63, 94",
-        "center",
-        Math.max(12, unit * 1.8),
-      );
-    }
   }
 
   // ─── Gate Handler ──────────────────────────────────────
@@ -1443,7 +1500,6 @@ export default function KioskPage() {
             method: "manual",
             success: true,
             confidence: null,
-            uniform_ok: null,
             failure_reason: null,
             gate_state: opened ? "open" : "unconfirmed",
             device_timestamp: new Date().toISOString(),
@@ -1558,6 +1614,33 @@ export default function KioskPage() {
         : `Synced: ${status.studentsDownloaded} students, ${status.logsUploaded} logs`,
     );
     refreshStats();
+    if (showQueueModal) void loadQueue();
+  }
+
+  /** Read every access row still waiting in IndexedDB for upload. */
+  async function loadQueue() {
+    setQueueLoading(true);
+    try {
+      setQueueLogs(await getUnsyncedLogs());
+    } catch {
+      setQueueLogs([]);
+    }
+    setQueueLoading(false);
+    refreshStats();
+  }
+
+  function openQueueModal() {
+    setShowQueueModal(true);
+    void loadQueue();
+  }
+
+  /** Push the whole offline queue to the cloud, then refresh the list. */
+  async function syncQueueNow() {
+    if (queueSyncing || !online) return;
+    setQueueSyncing(true);
+    await handleManualSync();
+    await loadQueue();
+    setQueueSyncing(false);
   }
 
   async function refreshEnrolledFaces() {
@@ -1699,7 +1782,6 @@ export default function KioskPage() {
     stopHeartbeat();
     disconnectGate().catch(() => {});
     cleanupFaceResources();
-    cleanupUniformDetector();
   }
 
   // ─── Network Status ─────────────────────────────────────
@@ -1733,12 +1815,15 @@ export default function KioskPage() {
   async function loadSettingsFromDb() {
     try {
       const settings = await getAllSettings();
-      const uniformEnabled = settings.find((s) => s.key === "uniform_detection_enabled");
       const threshold = settings.find((s) => s.key === "face_recognition_threshold");
 
-      if (uniformEnabled) {
-        settingsRef.current.uniformEnabled = uniformEnabled.value === "true";
-      }
+      const lockdownRow = settings.find((s) => s.key === "lockdown_mode");
+      const lockdownWhy = settings.find((s) => s.key === "lockdown_reason");
+      const locked = (lockdownRow?.value ?? "false") === "true";
+      settingsRef.current.lockdownMode = locked;
+      settingsRef.current.lockdownReason = lockdownWhy?.value ?? "";
+      setLockdownActive(locked);
+      setLockdownReason(lockdownWhy?.value ?? "");
       if (threshold) {
         const parsed = parseFloat(threshold.value);
         if (!isNaN(parsed)) {
@@ -1892,6 +1977,25 @@ export default function KioskPage() {
     }
   }
 
+  /**
+   * Play the grant cue so the operator can hear the speaker.
+   * Tapping "test" implies wanting sound, so it also turns voice back on.
+   */
+  async function handleTestVoice() {
+    if (!voiceOn) {
+      setVoiceOn(true);
+      setVoiceEnabled(true);
+      try {
+        await storeSetting("voice_enabled", "true");
+      } catch {
+        /* non-fatal */
+      }
+    }
+    unlockAudio();
+    primeSpeechVoices();
+    playCue("grant");
+  }
+
   async function sendHeartbeatTick(): Promise<HeartbeatInput> {
     const stats = await getDatabaseStats().catch(() => null);
     const payload: HeartbeatInput = {
@@ -1946,7 +2050,6 @@ export default function KioskPage() {
         return {
           face: "ok" as StepVisual,
           identity: "ok" as StepVisual,
-          uniform: (lastUniform ? (lastUniform.ok ? "ok" : "fail") : "idle") as StepVisual,
           title: "You are already recorded — proceed to the gate",
           hint: `${holdNotice.name} passed at ${at}. Verified once — there is no need to scan again.`,
         };
@@ -1956,11 +2059,10 @@ export default function KioskPage() {
         return {
           face: "ok" as StepVisual,
           identity: "ok" as StepVisual,
-          uniform: "fail" as StepVisual,
           title: "Access denied — step away, then try again",
           hint:
             holdNotice.detail ??
-            "The uniform did not match your course. Step out of the oval and back in to re-scan.",
+            "Step out of the oval and back in to re-scan.",
         };
       }
 
@@ -1970,18 +2072,25 @@ export default function KioskPage() {
       return {
         face: "ok" as StepVisual,
         identity: "ok" as StepVisual,
-        uniform: "idle" as StepVisual,
         title: "You are already recorded — step aside to re-scan",
         hint: `${holdNotice.name} passed at ${at}. Step out of the oval briefly, then step back in to verify again.`,
       };
     }
 
-    const matched = lastMatch?.matched ?? false;
-    const uniformOk = lastUniform?.ok ?? null;
+    // The rail may only ever name a CONFIRMED identity: the raw per-tick
+    // winner flickers between lookalikes, so an unconfirmed "match" reads as
+    // still-verifying — never a name, never a score.
+    const livePersonId =
+      lastMatch?.matched && lastMatch.person ? lastMatch.person.id : null;
+    const confirmedLive = confirmed && livePersonId === confirmed.id ? confirmed : null;
+    const matched = confirmedLive !== null;
+    const verifyHint =
+      confirmProgress > 0
+        ? "Verifying identity — hold still " + Math.min(confirmProgress, CONFIRM_TICKS) + "/" + CONFIRM_TICKS
+        : "Verifying identity — look at the camera and hold still";
 
     let face: StepVisual = "working";
     let identity: StepVisual = "idle";
-    let uniformStep: StepVisual = "idle";
     let title = "Step in front of the camera";
     let hint = "Face detection is live — the oval shows where to stand";
 
@@ -1991,27 +2100,29 @@ export default function KioskPage() {
       face = "ok";
       identity = "working";
       title = "Face detected — hold still";
-      hint = "Matching against enrolled biometric profiles";
-    } else if (scanStep === "uniform") {
+      hint = verifyHint;
+    } else if (scanStep === "verify") {
       face = "ok";
-      identity = matched ? "ok" : "fail";
-      uniformStep = "working";
-      title = matched ? "Identity matched — checking uniform" : "Face not recognized";
-      hint = matched
-        ? "YOLO11 is reading your uniform against your course"
-        : "No enrolled profile matched — see the guard station";
+      identity = matched ? "ok" : "working";
+      if (matched) {
+        // Name goes up the moment identity is confirmed — the ~5s hold-still
+        // belongs to the face step for an accurate name.
+        title = confirmedLive!.name;
+        hint = "Identity verified — checking guest pass";
+      } else {
+        // A raw winner the gate hasn't confirmed yet: still verifying, and
+        // the identity chip must NOT flip to fail on a settling read.
+        title = "Verifying identity — hold still";
+        hint = verifyHint;
+      }
     } else if (scanStep === "done") {
       face = "ok";
       identity = matched ? "ok" : "fail";
-      uniformStep = uniformOk === null ? "idle" : uniformOk ? "ok" : "fail";
       title = "Verification complete";
       hint = statusMessage;
     }
 
-    // Once the uniform verdict lands, show exactly what the model saw.
-    if (lastUniform && lastUniform.detail) {
-      hint = lastUniform.detail;
-    } else if (!matched && lastMatch && scanStep === "done") {
+    if (!matched && lastMatch && scanStep === "done") {
       // Only once the read has settled — mid-scan frames score far below the
       // person's real similarity and the number would look alarming.
       // Surface the real similarity score — it is the difference between
@@ -2023,15 +2134,15 @@ export default function KioskPage() {
         lastMatch.confidence > 0
           ? `Closest enrolled profile ${scorePct}% — ${needPct}% is required to open the gate`
           : "Face detected, but it doesn't match any enrolled student";
-    } else if (matched) {
-      hint = `Identity matched at ${Math.round((lastMatch?.confidence ?? 0) * 100)}%`;
+    } else if (confirmedLive && scanStep !== "verify") {
+      hint = `Identity verified at ${Math.round(confirmedLive.confidence * 100)}%`;
     }
 
-    return { face, identity, uniform: uniformStep, title, hint };
+    return { face, identity, title, hint };
   })();
 
   return (
-    <div className="relative w-screen h-screen bg-surface-50 overflow-hidden select-none">
+    <div className="relative w-screen h-screen h-[100dvh] bg-surface-50 overflow-hidden select-none">
       {/* ─── Tap-to-Start Splash (unlocks camera + audio) ── */}
       {showSplash && (
         <div
@@ -2052,9 +2163,7 @@ export default function KioskPage() {
           {/* Institutional Top Header (Edge-to-Edge Full Width) */}
           <div className="relative z-10 flex items-center justify-between w-full max-w-5xl mx-auto pb-4 sm:pb-6 border-b border-slate-200/80 pointer-events-none">
             <div className="flex items-center gap-3.5 sm:gap-4">
-              <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-tr from-blue-700 via-blue-600 to-indigo-600 flex items-center justify-center text-white font-black text-sm sm:text-base shadow-lg shadow-blue-600/25 shrink-0">
-                {schoolBrand.initials}
-              </div>
+              <img src="/isufst-logo.png" alt="ISUFST logo" className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl object-contain p-0.5 shadow-lg shadow-blue-600/25 shrink-0 bg-white" />
               <div className="leading-snug">
                 <p className="text-sm sm:text-base md:text-lg font-black tracking-tight text-slate-900 uppercase">
                   {schoolBrand.name}
@@ -2095,7 +2204,7 @@ export default function KioskPage() {
             {/* Title & Headline */}
             <div className="space-y-2.5 max-w-2xl mx-auto">
               <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700 text-xs sm:text-sm font-extrabold tracking-widest uppercase shadow-xs">
-                <Sparkles className="w-3.5 h-3.5 text-blue-600" /> AI Biometric & Uniform
+                <Sparkles className="w-3.5 h-3.5 text-blue-600" /> AI Biometric & Policy
                 Verification
               </div>
               <h1 className="text-3xl sm:text-5xl md:text-6xl font-black text-slate-900 tracking-tight leading-none">
@@ -2121,13 +2230,13 @@ export default function KioskPage() {
               </div>
               <div className="p-4 sm:p-6 rounded-2xl bg-white/90 backdrop-blur-xl border border-slate-200/90 shadow-sm flex flex-col items-center text-center">
                 <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center mb-3">
-                  <Shirt className="w-6 h-6 sm:w-7 sm:h-7 text-indigo-600" />
+                  <Ticket className="w-6 h-6 sm:w-7 sm:h-7 text-indigo-600" />
                 </div>
                 <span className="text-sm sm:text-base font-black text-slate-900">
-                  Prescribed Uniform
+                  Guest Pass & Policy
                 </span>
                 <span className="text-xs sm:text-sm text-slate-500 font-medium mt-0.5">
-                  YOLO AI dress code
+                  Pass expiry + lockdown
                 </span>
               </div>
               <div className="p-4 sm:p-6 rounded-2xl bg-white/90 backdrop-blur-xl border border-slate-200/90 shadow-sm flex flex-col items-center text-center">
@@ -2214,17 +2323,15 @@ export default function KioskPage() {
       )}
 
       {/* ─── Top Bar ─────────────────────────────────── */}
-      <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-6 sm:px-10 py-5 sm:py-7 z-30 pointer-events-none">
+      <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-4 sm:px-10 py-5 sm:py-7 z-30 pointer-events-none" style={{ paddingTop: "max(1.25rem, env(safe-area-inset-top))" }}>
         <div className="flex items-center gap-3 pointer-events-auto">
-          {/* Identity mark only. The live verdict is announced by the result card
-              and the corner colours, so the terminal no longer shouts a status
-              string at a student who just wants to see their own face. */}
-          <div className="glass-pill pl-2 pr-3.5 py-2 flex items-center gap-2.5 shadow-sm bg-white/60 border-white/40">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-blue-700 via-blue-600 to-indigo-600 flex items-center justify-center text-white font-black text-[9px] shrink-0">
-              {schoolBrand.initials}
-            </div>
+          {/* Floating school mark — no backdrop, no badge: the logo sits alone
+              over the full camera view with the live status dot riding its
+              corner, so chrome never boxes in the student's face. */}
+          <div className="relative pointer-events-auto" title="ISUFST Smart Gate terminal">
+            <img src="/isufst-logo.png" alt="ISUFST logo" className="w-14 h-14 sm:w-16 sm:h-16 object-contain drop-shadow-[0_2px_12px_rgba(0,0,0,0.45)]" />
             <span
-              className={`inline-flex w-2 h-2 rounded-full ${
+              className={`absolute bottom-1 right-1 inline-flex w-3 h-3 rounded-full ring-2 ring-white ${
                 kioskState === "error"
                   ? "bg-rose-500"
                   : kioskState === "ready" || kioskState === "granted"
@@ -2240,7 +2347,7 @@ export default function KioskPage() {
             in the corners so no chrome can ever sit over the face or uniform. */}
         <div className="flex items-center gap-2 pointer-events-auto">
           {currentTime && (
-            <div className="hidden sm:flex glass-pill px-3.5 py-2.5 items-center gap-2 shadow-sm bg-white/60 border-white/40">
+            <div className="hidden sm:flex glass-pill px-3.5 py-2.5 items-center gap-2 shadow-sm bg-white/90 border-white/40">
               <Clock className="w-3.5 h-3.5 text-blue-600" />
               <span className="font-mono text-xs sm:text-sm font-bold text-surface-700 tracking-wider">
                 {currentTime}
@@ -2249,7 +2356,7 @@ export default function KioskPage() {
           )}
 
           <div
-            className="glass-pill px-3 py-2.5 flex items-center gap-1.5 shadow-sm bg-white/60 border-white/40"
+            className="glass-pill px-3 py-2.5 flex items-center gap-1.5 shadow-sm bg-white/90 border-white/40"
             title={
               online
                 ? gateConnected
@@ -2266,9 +2373,29 @@ export default function KioskPage() {
             {gateConnected && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />}
           </div>
 
+          {/* Policy indicator (015): uniform retired — show PASS/POLICY + LOCKDOWN. Offline queue count rides the wifi pill tooltip + admin panel. */}
+          <div
+            className={`flex glass-pill px-2.5 sm:px-3 py-2.5 items-center gap-1.5 shadow-sm border-white/40 ${lockdownActive ? "bg-rose-50/95 border-rose-200" : "bg-white/90"}`}
+            title={
+              lockdownActive
+                ? `LOCKDOWN ACTIVE${lockdownReason ? ` — ${lockdownReason}` : ""} — all entries denied, guard override only`
+                : "Policy mode — face + guest pass / lockdown active."
+            }
+          >
+            <ShieldCheck className={`w-4 h-4 ${lockdownActive ? "text-rose-600" : "text-emerald-600"}`} />
+            <span className={`text-[10px] font-black tracking-widest ${lockdownActive ? "text-rose-700" : "text-emerald-700"}`}>
+              {lockdownActive ? "LOCKDOWN" : "POLICY ON"}
+            </span>
+            {!online && dbStats.unsyncedCount > 0 && (
+              <span className="ml-1 rounded-full bg-amber-100 text-amber-800 text-[10px] font-black px-2 py-0.5">
+                {dbStats.unsyncedCount} QUEUED
+              </span>
+            )}
+          </div>
+
           <button
             onClick={() => setShowAdminPanel(!showAdminPanel)}
-            className="glass-pill p-3 bg-white/60 border-white/40 hover:bg-white active:bg-surface-100 transition-all cursor-pointer text-surface-500 hover:text-surface-900 shadow-sm"
+            className="glass-pill p-3 bg-white/90 border-white/40 hover:bg-white active:bg-surface-100 transition-all cursor-pointer text-surface-500 hover:text-surface-900 shadow-sm"
             aria-label="Open admin panel"
           >
             <Settings className="w-5 h-5" />
@@ -2277,7 +2404,7 @@ export default function KioskPage() {
       </div>
 
       {cameraDown && (
-        <div className="absolute bottom-6 left-6 sm:left-10 z-40 glass-pill pl-3 pr-4 py-2.5 flex items-center gap-2 bg-amber-50/95 border-amber-200 shadow-sm">
+        <div className="absolute left-4 sm:left-10 z-40 glass-pill pl-3 pr-4 py-2.5 flex items-center gap-2 bg-amber-50/95 border-amber-200 shadow-sm" style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}>
           <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
           <span className="text-[11px] sm:text-xs font-bold text-amber-800 uppercase tracking-wider">
             Camera offline — hardware test mode
@@ -2287,7 +2414,7 @@ export default function KioskPage() {
 
       {/* ─── Full-Screen Initialization / Boot Sequence ───────────────────────────── */}
       {kioskState === "loading_models" && (
-        <div className="absolute inset-0 z-50 bg-[#f8fafc] flex flex-col justify-between p-6 sm:p-10 lg:p-14 select-none overflow-hidden">
+        <div className="absolute inset-0 z-50 bg-[#f8fafc] flex flex-col justify-between p-6 sm:p-10 lg:p-14 select-none overflow-y-auto">
           {/* Ambient luminous glow orbs */}
           <div className="absolute -top-32 -left-32 w-96 h-96 bg-blue-400/10 rounded-full blur-3xl pointer-events-none" />
           <div className="absolute -bottom-32 -right-32 w-[30rem] h-[30rem] bg-indigo-400/10 rounded-full blur-3xl pointer-events-none" />
@@ -2298,9 +2425,7 @@ export default function KioskPage() {
           {/* Institutional Top Header */}
           <div className="relative z-10 flex items-center justify-between w-full max-w-5xl mx-auto pb-4 sm:pb-6 border-b border-slate-200/80">
             <div className="flex items-center gap-3.5 sm:gap-4">
-              <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-tr from-blue-700 via-blue-600 to-indigo-600 flex items-center justify-center text-white font-black text-sm sm:text-base shadow-lg shadow-blue-600/25 shrink-0">
-                {schoolBrand.initials}
-              </div>
+              <img src="/isufst-logo.png" alt="ISUFST logo" className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl object-contain p-0.5 shadow-lg shadow-blue-600/25 shrink-0 bg-white" />
               <div className="leading-snug">
                 <p className="text-sm sm:text-base md:text-lg font-black tracking-tight text-slate-900 uppercase">
                   {schoolBrand.name}
@@ -2361,7 +2486,7 @@ export default function KioskPage() {
 
             {/* 3 Subsystem Status Badges */}
             <div className="grid grid-cols-3 gap-3 sm:gap-4 w-full max-w-xl text-left">
-              <div className="p-3.5 sm:p-4 rounded-2xl bg-white/90 border border-slate-200/90 shadow-sm flex items-center gap-3">
+              <div className="p-3.5 sm:p-4 rounded-2xl bg-white/90 border border-slate-200/90 shadow-sm flex flex-col sm:flex-row items-center gap-1.5 sm:gap-3 text-center sm:text-left">
                 <div className="w-9 h-9 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center shrink-0">
                   <UserCheck className="w-5 h-5 text-blue-600" />
                 </div>
@@ -2372,18 +2497,18 @@ export default function KioskPage() {
                   <p className="text-[11px] text-emerald-600 font-semibold">Active</p>
                 </div>
               </div>
-              <div className="p-3.5 sm:p-4 rounded-2xl bg-white/90 border border-slate-200/90 shadow-sm flex items-center gap-3">
+              <div className="p-3.5 sm:p-4 rounded-2xl bg-white/90 border border-slate-200/90 shadow-sm flex flex-col sm:flex-row items-center gap-1.5 sm:gap-3 text-center sm:text-left">
                 <div className="w-9 h-9 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center shrink-0">
-                  <Shirt className="w-5 h-5 text-indigo-600" />
+                  <Lock className="w-5 h-5 text-indigo-600" />
                 </div>
                 <div className="min-w-0">
                   <p className="text-xs sm:text-sm font-bold text-slate-900 truncate">
-                    Uniform Vision
+                    Policy Engine
                   </p>
-                  <p className="text-[11px] text-indigo-600 font-semibold">Loading ONNX</p>
+                  <p className="text-[11px] text-indigo-600 font-semibold">Pass + lockdown</p>
                 </div>
               </div>
-              <div className="p-3.5 sm:p-4 rounded-2xl bg-white/90 border border-slate-200/90 shadow-sm flex items-center gap-3">
+              <div className="p-3.5 sm:p-4 rounded-2xl bg-white/90 border border-slate-200/90 shadow-sm flex flex-col sm:flex-row items-center gap-1.5 sm:gap-3 text-center sm:text-left">
                 <div className="w-9 h-9 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center shrink-0">
                   <ShieldCheck className="w-5 h-5 text-emerald-600" />
                 </div>
@@ -2407,7 +2532,7 @@ export default function KioskPage() {
 
       {/* ─── Full-Screen Error / Diagnostic Display ─────────── */}
       {kioskState === "error" && (
-        <div className="absolute inset-0 z-50 bg-[#f8fafc] flex flex-col justify-between p-6 sm:p-10 lg:p-14 select-none overflow-hidden">
+        <div className="absolute inset-0 z-50 bg-[#f8fafc] flex flex-col justify-between p-6 sm:p-10 lg:p-14 select-none overflow-y-auto">
           {/* Ambient red warning glow */}
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[40rem] h-[40rem] bg-rose-400/10 rounded-full blur-3xl pointer-events-none" />
           <div className="absolute inset-0 bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] [background-size:28px_28px] opacity-40 pointer-events-none" />
@@ -2415,9 +2540,7 @@ export default function KioskPage() {
           {/* Top Header */}
           <div className="relative z-10 flex items-center justify-between w-full max-w-5xl mx-auto pb-4 sm:pb-6 border-b border-slate-200/80">
             <div className="flex items-center gap-3.5 sm:gap-4">
-              <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-tr from-rose-600 to-red-700 flex items-center justify-center text-white font-black text-sm sm:text-base shadow-lg shadow-rose-600/25 shrink-0">
-                {schoolBrand.initials}
-              </div>
+              <img src="/isufst-logo.png" alt="ISUFST logo" className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl object-contain p-0.5 shadow-lg shadow-rose-600/25 shrink-0 bg-white" />
               <div className="leading-snug">
                 <p className="text-sm sm:text-base md:text-lg font-black tracking-tight text-slate-900 uppercase">
                   Iloilo State University of Fisheries and Science and Technology
@@ -2490,23 +2613,23 @@ export default function KioskPage() {
         <div className="absolute left-4 sm:left-8 top-1/2 -translate-y-1/2 z-30 pointer-events-none flex flex-col items-start gap-1.5 w-[13rem] max-w-[42vw]">
           <ScanStepPill label="Face" state={pipeline?.face ?? "working"} />
           <ScanStepPill label="Identity" state={pipeline?.identity ?? "idle"} />
-          <ScanStepPill label="Uniform" state={pipeline?.uniform ?? "idle"} />
+          <PolicyReadout scanStep={scanStep} holdNotice={holdNotice} />
 
           {/* Each line hugs its own text — no panel, no border, no shared box.
               The backdrop exists only so the words stay readable on camera. */}
-          <p className="mt-1.5 max-w-full rounded-lg bg-white/55 backdrop-blur-md px-2.5 py-1 text-surface-900 font-black tracking-wide text-[13px] leading-snug shadow-sm">
+          <p className="mt-1.5 max-w-full rounded-lg bg-white/90 backdrop-blur-md px-2.5 py-1 text-surface-900 font-black tracking-wide text-[13px] leading-snug shadow-sm">
             {pipeline?.title ?? "Step in front of camera"}
           </p>
-          <p className="max-w-full rounded-lg bg-white/40 backdrop-blur-sm px-2.5 py-1 text-[11px] text-surface-600 font-medium leading-snug shadow-sm">
-            {pipeline?.hint ?? "Face & uniform verification active"}
+          <p className="max-w-full rounded-lg bg-white/85 backdrop-blur-sm px-2.5 py-1 text-[11px] text-surface-700 font-semibold leading-snug shadow-sm">
+            {pipeline?.hint ?? "Face + guest pass verification active"}
           </p>
         </div>
       )}
 
-      <div className="absolute bottom-6 left-6 sm:left-10 right-6 sm:right-10 flex items-end justify-center z-30 pointer-events-none">
+      <div className="absolute left-4 right-4 sm:left-10 sm:right-10 flex items-end justify-center z-30 pointer-events-none" style={{ bottom: "max(1.5rem, env(safe-area-inset-bottom))" }}>
         <div className="w-full max-w-2xl flex justify-center pointer-events-auto">
           {kioskState === "granted" && verdict ? (
-            <div className="glass-card p-6 sm:p-8 w-full shadow-2xl border-2 border-emerald-500/50 bg-white/95 animate-in fade-in zoom-in-95 duration-200">
+            <div className="glass-card p-5 sm:p-8 w-full shadow-2xl border-2 border-emerald-500/50 bg-white/95 animate-in fade-in zoom-in-95 duration-200">
               <div className="flex items-center gap-5">
                 <div className="w-16 h-16 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-center justify-center shrink-0 shadow-sm">
                   <CheckCircle2 className="w-10 h-10 text-emerald-600" />
@@ -2529,27 +2652,6 @@ export default function KioskPage() {
                   </p>
                 </div>
               </div>
-              {verdict.uniform && (
-                <div
-                  className={`mt-4 pt-3.5 border-t border-surface-200/60 text-sm sm:text-base font-bold flex items-center justify-between ${
-                    verdict.uniform.ok ? "text-emerald-700" : "text-rose-600"
-                  }`}
-                >
-                  <div className="flex items-center gap-2 truncate">
-                    {verdict.uniform.ok ? (
-                      <ShieldCheck className="w-5 h-5 text-emerald-600 shrink-0" />
-                    ) : (
-                      <XCircle className="w-5 h-5 text-rose-600 shrink-0" />
-                    )}
-                    <span className="truncate">
-                      Uniform: {verdict.uniform.ok ? "PASS" : "FAIL"} — {verdict.uniform.detail}
-                    </span>
-                  </div>
-                  <span className="text-xs font-mono opacity-80 shrink-0 ml-2">
-                    {Math.round(verdict.uniform.confidence * 100)}%
-                  </span>
-                </div>
-              )}
               {isDecisionGateBanner(gateState) && (
                 <div
                   className={`mt-3.5 flex items-center justify-between gap-3 text-sm sm:text-base font-black border rounded-2xl px-4 py-3 ${
@@ -2588,7 +2690,7 @@ export default function KioskPage() {
               )}
             </div>
           ) : kioskState === "denied" ? (
-            <div className="glass-card p-6 sm:p-8 w-full shadow-2xl border-2 border-rose-300 bg-white/95">
+            <div className="glass-card p-5 sm:p-8 w-full shadow-2xl border-2 border-rose-300 bg-white/95">
               <div className="flex items-center gap-5">
                 <div className="w-16 h-16 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center shrink-0">
                   <XCircle className="w-10 h-10 text-rose-600" />
@@ -2606,7 +2708,7 @@ export default function KioskPage() {
           ) : unknownNotice &&
             (kioskState === "ready" || kioskState === "scanning") &&
             !holdNotice ? (
-            <div className="glass-card p-6 sm:p-8 w-full shadow-2xl border-2 border-amber-300 bg-white/95 animate-in fade-in zoom-in-95 duration-200">
+            <div className="glass-card p-5 sm:p-8 w-full shadow-2xl border-2 border-amber-300 bg-white/95 animate-in fade-in zoom-in-95 duration-200">
               <div className="flex items-center gap-5">
                 <div className="w-16 h-16 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
                   <UserCheck className="w-10 h-10 text-amber-600" />
@@ -2633,8 +2735,13 @@ export default function KioskPage() {
       {/* The verdict card clears after a few seconds, which left the screen with
           no trace of what just happened. This keeps the latest decision visible
           while the student walks on, then clears itself. */}
-      {lastDecision && !holdNotice && kioskState !== "granted" && kioskState !== "denied" && (
-        <div className="absolute left-6 sm:left-10 bottom-6 z-30 pointer-events-none flex items-center gap-2 rounded-lg bg-white/60 backdrop-blur-md px-3 py-1.5 shadow-sm border border-white/40">
+      {lastDecision &&
+      !holdNotice &&
+      !unknownNotice &&
+      kioskState !== "granted" &&
+      kioskState !== "denied" &&
+      !(lastMatch?.matched && lastMatch.person && lastMatch.person.id !== lastDecision.personId) && (
+        <div className="absolute left-4 sm:left-10 z-30 pointer-events-none flex items-center gap-2 rounded-lg bg-white/90 backdrop-blur-md px-3 py-1.5 shadow-sm border border-white/40" style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}>
           <span className="text-[10px] font-black tracking-widest text-surface-500 uppercase">
             Last
           </span>
@@ -2660,7 +2767,7 @@ export default function KioskPage() {
           its configured window — the banner must live exactly as long. */}
       {isDecisionGateBanner(gateState) && kioskState !== "granted" && kioskState !== "denied" && (
         <div
-          className={`absolute left-1/2 -translate-x-1/2 top-6 z-30 pointer-events-none flex items-center justify-between gap-3 rounded-2xl border px-4 py-2.5 shadow-lg backdrop-blur-md text-sm font-black ${
+          className={`absolute left-1/2 -translate-x-1/2 top-[max(1.5rem,env(safe-area-inset-top))] z-30 pointer-events-none flex items-center justify-between gap-3 rounded-2xl border px-4 py-2.5 shadow-lg backdrop-blur-md text-sm font-black max-w-[calc(100vw-2rem)] ${
             gateState === "OPEN"
               ? "text-emerald-800 bg-emerald-50/90 border-emerald-200"
               : gateState === "AWAITING"
@@ -2697,12 +2804,12 @@ export default function KioskPage() {
 
       {/* ─── Operator Panel ──────────────────────────────── */}
       {showAdminPanel && (
-        <div className="absolute top-24 right-6 sm:right-8 z-40 glass-card p-6 w-[92vw] sm:w-96 shadow-2xl space-y-5 bg-white/95 border border-surface-200">
+        <div className="absolute top-24 left-4 right-4 sm:left-auto sm:right-8 z-40 glass-card p-5 sm:p-6 sm:w-96 max-h-[calc(100dvh-7rem)] overflow-y-auto shadow-2xl space-y-5 bg-white/95 border border-surface-200">
           <div className="flex items-center justify-between border-b border-surface-100 pb-3">
             <h3 className="font-bold text-surface-900 tracking-tight text-lg">Operator Panel</h3>
             <button
               onClick={() => setShowAdminPanel(false)}
-              className="text-surface-400 hover:text-surface-600 p-1 rounded-lg hover:bg-surface-100 transition-colors cursor-pointer"
+              className="text-surface-400 hover:text-surface-600 p-2 rounded-lg hover:bg-surface-100 transition-colors cursor-pointer"
               aria-label="Close admin panel"
             >
               <XCircle className="w-5 h-5" />
@@ -2752,21 +2859,28 @@ export default function KioskPage() {
                 {enrollmentHealth.withFace}/{enrollmentHealth.total}
               </span>
             </div>
-            <div className="flex justify-between">
+            <div className="flex justify-between items-center">
               <span className="text-surface-500">Pending sync</span>
-              <span
-                className={`font-mono font-bold ${dbStats.unsyncedCount > 0 ? "text-amber-600" : "text-surface-900"}`}
+              <button
+                onClick={openQueueModal}
+                className="flex items-center gap-1.5 font-mono font-bold text-primary-600 hover:text-primary-500 cursor-pointer"
+                title="Open the offline queue"
               >
-                {dbStats.unsyncedCount}
-              </span>
+                <span className={dbStats.unsyncedCount > 0 ? "text-amber-600" : "text-surface-900"}>
+                  {dbStats.unsyncedCount}
+                </span>
+                <span className="text-[10px] font-black uppercase tracking-wider underline">
+                  View queue
+                </span>
+              </button>
             </div>
             <div className="flex justify-between">
-              <span className="text-surface-500">Uniform model</span>
-              <span
-                className={`font-bold ${isYoloModelLoaded() ? "text-green-600" : "text-red-500"}`}
-              >
-                {isYoloModelLoaded() ? "LOADED" : "MISSING"}
-              </span>
+              <span className="text-surface-500">Uniform vision</span>
+              <span className="font-bold text-surface-400">RETIRED</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-surface-500">Entry policy</span>
+              <span className="font-bold text-green-600">FACE + PASS</span>
             </div>
             <div className="flex justify-between">
               <span className="text-surface-500">Last sync</span>
@@ -2863,13 +2977,22 @@ export default function KioskPage() {
           </div>
 
           <div className="space-y-3">
-            <button
-              onClick={handleManualSync}
-              className="btn-primary w-full flex items-center justify-center gap-2"
-              disabled={!online}
-            >
-              <RefreshCw className="w-4 h-4" /> Force Sync
-            </button>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={handleManualSync}
+                className="btn-primary w-full flex items-center justify-center gap-2"
+                disabled={!online}
+              >
+                <RefreshCw className="w-4 h-4" /> Force Sync
+              </button>
+              <button
+                onClick={openQueueModal}
+                className="w-full text-sm px-5 py-3 rounded-xl font-bold transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200"
+              >
+                <Database className="w-4 h-4" />
+                Queue{dbStats.unsyncedCount > 0 ? ` (${dbStats.unsyncedCount})` : ""}
+              </button>
+            </div>
 
             <button
               onClick={handleConnectGate}
@@ -2891,17 +3014,27 @@ export default function KioskPage() {
               )}
             </button>
 
-            {/* Voice toggle */}
-            <button
-              onClick={handleToggleVoice}
-              className={`w-full text-sm px-5 py-3 rounded-xl font-bold transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer ${
-                voiceOn
-                  ? "bg-green-50 text-green-700 border border-green-200"
-                  : "bg-surface-100 hover:bg-surface-200 text-surface-700 border border-surface-200"
-              }`}
-            >
-              <Volume2 className="w-4 h-4" /> Voice {voiceOn ? "ON" : "OFF"}
-            </button>
+            {/* Voice toggle + test sound */}
+            <div className="grid grid-cols-[1fr_auto] gap-2">
+              <button
+                onClick={handleToggleVoice}
+                className={`w-full text-sm px-5 py-3 rounded-xl font-bold transition-all duration-200 flex items-center justify-center gap-2 cursor-pointer ${
+                  voiceOn
+                    ? "bg-green-50 text-green-700 border border-green-200"
+                    : "bg-surface-100 hover:bg-surface-200 text-surface-700 border border-surface-200"
+                }`}
+              >
+                <Volume2 className="w-4 h-4" /> Voice {voiceOn ? "ON" : "OFF"}
+              </button>
+              <button
+                onClick={handleTestVoice}
+                className="px-4 py-3 rounded-xl font-bold text-sm bg-primary-50 hover:bg-primary-100 text-primary-700 border border-primary-200 transition-colors flex items-center justify-center gap-2 cursor-pointer"
+                title="Play the grant chime + welcome message"
+                aria-label="Test voice sound"
+              >
+                <Play className="w-4 h-4" /> Test
+              </button>
+            </div>
 
             <button
               onClick={() => window.location.reload()}
@@ -2909,6 +3042,110 @@ export default function KioskPage() {
             >
               <RefreshCw className="w-4 h-4" /> Reboot Terminal
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Offline queue modal: every row waiting in IndexedDB ─── */}
+      {showQueueModal && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center p-4 sm:p-8">
+          <div
+            className="absolute inset-0 bg-surface-900/50 backdrop-blur-sm"
+            onClick={() => setShowQueueModal(false)}
+          />
+          <div className="relative w-full max-w-2xl max-h-[86vh] bg-white rounded-3xl shadow-2xl border border-surface-200 overflow-hidden flex flex-col">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-surface-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center">
+                  <Database className="w-5 h-5 text-amber-600" />
+                </div>
+                <div>
+                  <h3 className="font-black text-surface-900 text-lg tracking-tight">
+                    Offline Queue
+                  </h3>
+                  <p className="text-xs font-medium text-surface-500">
+                    {queueLogs.length === 0
+                      ? "Nothing waiting — every scan is in the cloud"
+                      : `${queueLogs.length} scan${queueLogs.length === 1 ? "" : "s"} stored on this device, waiting for upload`}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowQueueModal(false)}
+                className="text-surface-400 hover:text-surface-600 p-2 rounded-lg hover:bg-surface-100 transition-colors cursor-pointer"
+                aria-label="Close offline queue"
+              >
+                <XCircle className="w-6 h-6" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-4">
+              {queueLoading ? (
+                <p className="text-center text-sm font-bold text-surface-400 py-10">
+                  Reading device storage…
+                </p>
+              ) : queueLogs.length === 0 ? (
+                <div className="text-center py-10">
+                  <div className="w-14 h-14 mx-auto mb-3 rounded-2xl bg-green-50 border border-green-100 flex items-center justify-center">
+                    <CheckCircle2 className="w-7 h-7 text-green-500" />
+                  </div>
+                  <p className="font-bold text-surface-900 text-sm">Queue is empty</p>
+                  <p className="text-surface-500 font-medium text-xs mt-1">
+                    New scans appear here automatically when the network drops.
+                  </p>
+                </div>
+              ) : (
+                <div className="divide-y divide-surface-50">
+                  {queueLogs.map((log) => (
+                    <div key={log.id ?? log.sync_id} className="flex items-center gap-3 py-3">
+                      <div
+                        className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 ${
+                          log.success ? "bg-green-50 text-green-600" : "bg-red-50 text-red-500"
+                        }`}
+                      >
+                        {log.success ? (
+                          <CheckCircle2 className="w-4 h-4" />
+                        ) : (
+                          <XCircle className="w-4 h-4" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-surface-900 truncate">
+                          {log.person_name || "Unknown person"}
+                        </p>
+                        <p className="text-[11px] font-semibold text-surface-400 uppercase truncate">
+                          {log.method || "face"} · {log.success ? "granted" : "denied"}
+                          {log.decision_note ? ` · ${log.decision_note}` : log.failure_reason ? ` · ${log.failure_reason}` : ""}
+                        </p>
+                      </div>
+                      <span className="text-xs font-semibold text-surface-400 shrink-0 font-mono">
+                        {new Date(log.device_timestamp).toLocaleTimeString([], {
+                          hour: "numeric",
+                          minute: "2-digit",
+                        })}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="px-6 py-4 border-t border-surface-100 flex flex-col sm:flex-row gap-2">
+              <button
+                onClick={syncQueueNow}
+                disabled={!online || queueSyncing || queueLogs.length === 0}
+                className="btn-primary flex-1 flex items-center justify-center gap-2 disabled:opacity-40"
+              >
+                <RefreshCw className={`w-4 h-4 ${queueSyncing ? "animate-spin" : ""}`} />
+                {queueSyncing ? "Syncing…" : online ? "Sync now" : "Offline — connect to sync"}
+              </button>
+              <button
+                onClick={() => setShowQueueModal(false)}
+                className="px-5 py-3 bg-white border border-surface-200 hover:bg-surface-50 text-surface-700 rounded-xl text-sm font-bold transition-colors cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

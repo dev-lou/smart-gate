@@ -12,7 +12,9 @@
  *   - Sent every 60s while the kiosk page is open
  *   - A kiosk is considered OFFLINE on the dashboard when its
  *     `updated_at` is older than 90 seconds
- *   - A stable `kiosk_id` is generated once and kept in IndexedDB
+ *   - Single-kiosk deployment: the id is the fixed `gate-01` string so
+ *     reinstalls and new browser profiles never spawn phantom kiosk rows.
+ *     A stored override in IndexedDB still wins when present.
  */
 
 import { getSetting, storeSetting } from "./db";
@@ -76,20 +78,21 @@ export function isHeartbeatTableMissing(err: unknown): boolean {
 // ─── Kiosk ID ───────────────────────────────────────────────
 
 /**
- * Get (or generate + persist) the stable kiosk identifier.
+ * Get the stable kiosk identifier. Single-kiosk deployment: always
+ * `gate-01` unless an override was stored previously (kept as-is so an
+ * existing install keeps updating its own row, never a duplicate).
  */
 export function getKioskId(): Promise<string> {
   if (kioskIdPromise) return kioskIdPromise;
 
   kioskIdPromise = (async () => {
     const existing = await getSetting(KIKSK_ID_KEY);
-    if (existing) return existing;
+    // Legacy builds stored a random id per browser profile (kiosk_<time>_<rand>),
+    // which spawned one phantom row per install. Fold those into gate-01.
+    if (existing && !existing.startsWith("kiosk_")) return existing;
 
-    const generated = `kiosk_${Date.now().toString(36)}_${Math.random()
-      .toString(36)
-      .substring(2, 10)}`;
-    await storeSetting(KIKSK_ID_KEY, generated);
-    return generated;
+    await storeSetting(KIKSK_ID_KEY, "gate-01");
+    return "gate-01";
   })();
 
   return kioskIdPromise;

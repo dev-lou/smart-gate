@@ -158,12 +158,38 @@ export async function downloadStudents(): Promise<number> {
   // Guests live in their own table (migration 011) — same face-match
   // pipeline, but uniform_type "guest" tells the kiosk to skip the
   // uniform check and grant on face match.
-  const { data: guestData, error: guestError } = await supabase
+  // 015 E-Pass columns may not exist yet if the migration hasn't been run —
+  // fall back to the legacy column set so guest sync keeps working.
+  interface GuestRow {
+    id: string;
+    name: string;
+    purpose?: string | null;
+    contact?: string | null;
+    host_name?: string | null;
+    valid_until?: string | null;
+    status?: string | null;
+    photo_url: string | null;
+    is_active?: boolean | null;
+    updated_at: string;
+  }
+  let guestData: GuestRow[] | null = null;
+  const guestRes = await supabase
     .from("guests")
-    .select("id, name, purpose, photo_url, is_active, updated_at")
+    .select("id, name, purpose, contact, host_name, valid_until, status, photo_url, is_active, updated_at")
     .eq("is_active", true);
-
-  if (guestError) throw guestError;
+  if (!guestRes.error) {
+    guestData = guestRes.data;
+  } else if ((guestRes.error as { code?: string }).code === "42703") {
+    console.warn("[Supabase] 015 not applied — syncing guests without E-Pass columns. Run database/migrations/015_epass_lockdown_policy.sql.");
+    const legacy = await supabase
+      .from("guests")
+      .select("id, name, purpose, photo_url, is_active, updated_at")
+      .eq("is_active", true);
+    if (legacy.error) throw legacy.error;
+    guestData = (legacy.data ?? []) as GuestRow[];
+  } else {
+    throw guestRes.error;
+  }
 
   if ((!data || data.length === 0) && (!guestData || guestData.length === 0)) {
     // A successful empty result means every person is inactive or removed.
@@ -185,6 +211,9 @@ export async function downloadStudents(): Promise<number> {
     photo_url: string | null;
     is_active?: boolean | null;
     updated_at: string;
+    host_name?: string | null;
+    purpose?: string | null;
+    valid_until?: string | null;
   }): StoredStudent => {
     const existing = existingMap.get(s.id);
     const unchanged =
@@ -196,6 +225,9 @@ export async function downloadStudents(): Promise<number> {
       student_id: s.student_id ?? "",
       department: s.department ?? "",
       uniform_type: s.uniform_type ?? "default",
+      host_name: (s as { host_name?: string | null }).host_name ?? null,
+      purpose: (s as { purpose?: string | null }).purpose ?? null,
+      valid_until: (s as { valid_until?: string | null }).valid_until ?? null,
       photo_url: s.photo_url,
       // Keep computed embeddings when the record didn't change (offline-first)
       embeddings: unchanged ? existing!.embeddings : [],
@@ -256,11 +288,13 @@ interface AccessLogRow {
   method: string;
   success: boolean;
   confidence: number | null;
-  uniform_ok: boolean | null;
   failure_reason: string | null;
   gate_state: string | null;
   device_timestamp: string;
   sync_id: string;
+  reason_code: string | null;
+  decision_note: string | null;
+  client_id: string | null;
 }
 
 /**
@@ -294,13 +328,41 @@ function isFatalAuthError(error: { code?: string; message?: string } | null): bo
  * This walk recovers that case without losing or double-counting anything.
  * Returns true when every row is now either newly stored or already present.
  */
+function isMissingColumnError(error: { code?: string } | null): boolean {
+  return !!error && error.code === "42703";
+}
+
+/**
+ * Strip 015 columns so the row fits a database where the migration
+ * hasn't been applied yet. The human-readable decision survives in
+ * failure_reason; reason_code/decision_note/client_id apply after 015.
+ */
+function toLegacyRow(row: AccessLogRow): Record<string, unknown> {
+  const { reason_code: _rc, decision_note: _dn, client_id: _cid, ...legacy } = row;
+  void _rc;
+  void _dn;
+  void _cid;
+  return legacy;
+}
+
 async function insertRowsIndividually(rows: AccessLogRow[]): Promise<boolean> {
   if (!supabase) return false;
 
   let allStored = true;
+  let legacyMode = false;
   for (const row of rows) {
-    const { error } = await supabase.from("access_logs").insert(row);
+    const payload = legacyMode ? toLegacyRow(row) : row;
+    const { error } = await supabase.from("access_logs").insert(payload as typeof row);
     if (!error || isDuplicateKeyError(error)) continue;
+    if (!legacyMode && isMissingColumnError(error)) {
+      console.warn("[Supabase] 015 not applied — uploading logs without reason columns. Run database/migrations/015_epass_lockdown_policy.sql.");
+      legacyMode = true;
+      const retry = await supabase.from("access_logs").insert(toLegacyRow(row));
+      if (!retry.error || isDuplicateKeyError(retry.error)) continue;
+      console.error(`[Supabase] Log ${row.sync_id} rejected:`, retry.error.message);
+      allStored = false;
+      continue;
+    }
     console.error(`[Supabase] Log ${row.sync_id} rejected:`, error.message);
     allStored = false;
   }
@@ -336,12 +398,14 @@ export async function uploadLogs(): Promise<number> {
       method: log.method,
       success: log.success,
       confidence: log.confidence,
-      uniform_ok: log.uniform_ok,
       failure_reason: log.failure_reason,
       gate_state: log.gate_state ?? null,
       device_timestamp: log.device_timestamp,
       // Server-side idempotency key; migration 006 adds the indexed column.
       sync_id: log.sync_id,
+      reason_code: (log as { reason_code?: string | null }).reason_code ?? null,
+      decision_note: (log as { decision_note?: string | null }).decision_note ?? null,
+      client_id: (log as { client_id?: string | null }).client_id ?? null,
     }));
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -363,7 +427,7 @@ export async function uploadLogs(): Promise<number> {
 
           // A batch insert is atomic, so one already-stored sync_id (a retry
           // after a lost response) fails all of it. Recover row by row.
-          if (isDuplicateKeyError(error)) {
+          if (isDuplicateKeyError(error) || isMissingColumnError(error)) {
             if (await insertRowsIndividually(rows)) {
               success = true;
               break;

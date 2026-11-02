@@ -94,9 +94,7 @@ export default function LoginPage() {
     <div className="min-h-screen bg-surface-50 flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white border border-surface-200 shadow-sm flex items-center justify-center">
-            <Lock className="w-8 h-8 text-primary-500" />
-          </div>
+          <img src="/isufst-logo.png" alt="ISUFST logo" className="w-16 h-16 mx-auto mb-4 rounded-2xl object-contain p-0.5 border border-surface-200 shadow-sm bg-white" />
           <h1 className="text-2xl font-bold text-surface-900">Smart Gate</h1>
           <p className="text-surface-500 text-sm font-medium mt-1">{schoolName}</p>
           <p className="text-[11px] text-surface-400 font-semibold uppercase tracking-widest mt-0.5">

@@ -28,6 +28,10 @@ export interface StoredStudent {
   department: string;
   uniform_type: string;
   photo_url: string | null;
+  /** Guest E-Pass (015): host + expiry synced from guests table */
+  host_name?: string | null;
+  purpose?: string | null;
+  valid_until?: string | null;
   /** 🔴 ACCURACY FIX #4: Multiple embeddings per student (different angles) */
   embeddings: Float32Array[];
   is_active: boolean;
@@ -43,8 +47,11 @@ export interface StoredLog {
   method: string;
   success: boolean;
   confidence: number | null;
-  uniform_ok: boolean | null;
   failure_reason: string | null;
+  /** 015 explainable decisions + offline client id */
+  reason_code?: string | null;
+  decision_note?: string | null;
+  client_id?: string | null;
   /** Gate feedback: "open" | "unconfirmed" | null (no gate link) */
   gate_state?: string | null;
   device_timestamp: string;
@@ -137,6 +144,9 @@ export async function getEnrolledFaces(): Promise<EnrolledFace[]> {
       department: s.department,
       uniform_type: s.uniform_type,
       embeddings: s.embeddings,
+      host_name: (s as StoredStudent).host_name ?? null,
+      purpose: (s as StoredStudent).purpose ?? null,
+      valid_until: (s as StoredStudent).valid_until ?? null,
     }));
 }
 
@@ -287,7 +297,6 @@ export async function getSyncSettings(): Promise<{
   schoolName: string;
   schoolInitials: string;
   matchThreshold: number;
-  uniformEnabled: boolean;
 }> {
   const rawName = (await getSetting("school_name")) ?? "";
   // Guard against the old placeholder seed value
@@ -296,10 +305,8 @@ export async function getSyncSettings(): Promise<{
       ? rawName
       : "Iloilo State University of Fisheries Science and Technology";
   const schoolInitials = (await getSetting("school_initials")) ?? "ISUFST";
-  const threshold = parseFloat((await getSetting("face_recognition_threshold")) ?? "0.65");
-  const uniformEnabled = (await getSetting("uniform_detection_enabled")) !== "false";
-
-  return { schoolName, schoolInitials, matchThreshold: threshold, uniformEnabled };
+  const threshold = parseFloat((await getSetting("face_recognition_threshold")) ?? "0.7");
+  return { schoolName, schoolInitials, matchThreshold: threshold };
 }
 
 // ─── Database Stats ─────────────────────────────────────────

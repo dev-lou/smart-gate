@@ -15,6 +15,8 @@ import {
   ShieldCheck,
   MonitorSmartphone,
   UserRoundCog,
+  Menu,
+  X,
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -34,6 +36,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     "Iloilo State University of Fisheries Science and Technology",
   );
   const [schoolInitials, setSchoolInitials] = useState("ISUFST");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Branding from system_settings — same source the kiosk syncs
   useEffect(() => {
@@ -109,13 +112,30 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   return (
     <ToastProvider>
       <div className="min-h-screen bg-surface-100/60 flex">
-        {/* ─── Sidebar ─── */}
-        <aside className="w-64 shrink-0 bg-surface-900 text-surface-100 flex flex-col sticky top-0 h-screen">
+        {/* ─── Mobile sidebar scrim ─── */}
+        {sidebarOpen && (
+          <div
+            className="fixed inset-0 bg-surface-900/50 backdrop-blur-sm z-40 lg:hidden"
+            onClick={() => setSidebarOpen(false)}
+            aria-hidden="true"
+          />
+        )}
+        {/* ─── Sidebar (drawer on mobile, static on desktop) ─── */}
+        <aside
+          className={`w-64 shrink-0 bg-surface-900 text-surface-100 flex flex-col fixed lg:sticky top-0 h-screen z-50 transition-transform duration-300 lg:translate-x-0 ${
+            sidebarOpen ? "translate-x-0" : "-translate-x-full"
+          }`}
+        >
           {/* Brand */}
           <div className="p-5 border-b border-white/10 flex items-center gap-3">
-            <div className="w-11 h-11 rounded-xl bg-primary-600 flex items-center justify-center text-white font-black text-[10px] sm:text-xs shadow-sm shrink-0">
-              {schoolInitials}
-            </div>
+            <button
+              onClick={() => setSidebarOpen(false)}
+              className="p-1.5 -ml-1 rounded-lg text-surface-400 hover:text-white hover:bg-white/10 transition-colors lg:hidden shrink-0"
+              aria-label="Close menu"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <img src="/isufst-logo.png" alt="ISUFST logo" className="w-11 h-11 rounded-xl object-contain p-0.5 shadow-sm shrink-0 bg-white" />
             <div className="min-w-0">
               <h1 className="text-base font-black tracking-tight text-white leading-tight">
                 Smart Gate
@@ -140,6 +160,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 <Link
                   key={item.href}
                   href={item.href}
+                  onClick={() => setSidebarOpen(false)}
                   className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition-all cursor-pointer ${
                     active
                       ? "bg-primary-600 text-white shadow-lg shadow-primary-900/40"
@@ -208,8 +229,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         {/* ─── Main ─── */}
         <div className="flex-1 flex flex-col min-w-0">
           {/* Topbar */}
-          <header className="h-16 bg-white/70 backdrop-blur-xl border-b border-surface-200/60 flex items-center justify-between px-6 lg:px-8 sticky top-0 z-30">
+          <header className="h-16 bg-white/70 backdrop-blur-xl border-b border-surface-200/60 flex items-center justify-between gap-2 px-4 sm:px-6 lg:px-8 sticky top-0 z-30">
             <div className="flex items-center gap-2 text-surface-500 min-w-0">
+              <button
+                onClick={() => setSidebarOpen(true)}
+                className="p-2 -ml-1 rounded-xl text-surface-600 hover:bg-surface-100 transition-colors lg:hidden shrink-0"
+                aria-label="Open menu"
+              >
+                <Menu className="w-5 h-5" />
+              </button>
               <ShieldCheck className="w-4 h-4 text-primary-500 shrink-0" />
               <span
                 className="text-xs font-bold uppercase tracking-widest truncate"
@@ -218,13 +246,14 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 {schoolName} — Smart Gate Management
               </span>
             </div>
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-700">
+            <div className="flex items-center gap-2 px-2.5 sm:px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-200 text-xs font-bold text-emerald-700 shrink-0">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              System Online
+              <span className="hidden sm:inline">System Online</span>
+              <span className="sm:hidden">Online</span>
             </div>
           </header>
 
-          <main className="flex-1 p-6 lg:p-8 overflow-x-hidden">{children}</main>
+          <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-x-hidden">{children}</main>
         </div>
       </div>
     </ToastProvider>

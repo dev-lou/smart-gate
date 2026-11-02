@@ -1,14 +1,12 @@
 /**
- * Shared Web Worker Manager
- * ==========================
- * Manages a single ONNX Runtime Web Worker shared between face.ts and uniform.ts.
- * This prevents duplicate workers (each loading ~10MB of WASM) on memory-constrained tablets.
- *
- * 🔴 FIX CRITIQUE #1: Single shared worker instead of two separate workers.
+ * Inference Worker Manager (face lane only)
+ * ========================================
+ * Face-embedding inference runs in a dedicated worker so the main thread
+ * stays free for UI rendering. Uniform vision was retired: there is no
+ * second lane and no YOLO model.
  *
  * Usage:
  *   import { sendToWorker } from "./workerManager";
- *   const result = await sendToWorker("init_face", { modelUrl: "..." });
  *   const embedding = await sendToWorker("get_embedding", { pixels, width, height });
  */
 
@@ -16,51 +14,60 @@
 
 type WorkerCallback = (data: unknown, error?: Error) => void;
 
+interface WorkerLane {
+  worker: Worker | null;
+  callbacks: Map<string, WorkerCallback>;
+  timeouts: Map<string, ReturnType<typeof setTimeout>>;
+  counter: number;
+}
+
 // ─── State ──────────────────────────────────────────────────
 
-let inferenceWorker: Worker | null = null;
-const callbacks = new Map<string, WorkerCallback>();
-const timeoutMap = new Map<string, ReturnType<typeof setTimeout>>();
-let requestCounter = 0;
+function createLane(): WorkerLane {
+  return { worker: null, callbacks: new Map(), timeouts: new Map(), counter: 0 };
+}
+
+/** Face-embedding lane (init_face / get_embedding). */
+const faceLane = createLane();
 
 // ─── Worker Lifecycle ───────────────────────────────────────
 
 /**
- * Lazily create the shared inference worker.
+ * Lazily create the worker for a lane.
  */
-function getWorker(): Worker {
-  if (inferenceWorker) return inferenceWorker;
+function getWorker(lane: WorkerLane, laneName: string): Worker {
+  if (lane.worker) return lane.worker;
 
-  inferenceWorker = new Worker(new URL("./inference.worker.ts", import.meta.url), {
+  lane.worker = new Worker(new URL("./inference.worker.ts", import.meta.url), {
     type: "module",
   });
 
-  inferenceWorker.onmessage = (event: MessageEvent) => {
+  lane.worker.onmessage = (event: MessageEvent) => {
     const { type, id, data } = event.data;
 
-    const callback = callbacks.get(id);
+    const callback = lane.callbacks.get(id);
     if (callback) {
       const workerError =
         typeof type === "string" && type.endsWith("_error")
           ? new Error(`[Worker] ${type}: ${String(data)}`)
           : undefined;
       callback(data, workerError);
-      callbacks.delete(id);
+      lane.callbacks.delete(id);
 
       // Clear timeout
-      const timeout = timeoutMap.get(id);
+      const timeout = lane.timeouts.get(id);
       if (timeout) {
         clearTimeout(timeout);
-        timeoutMap.delete(id);
+        lane.timeouts.delete(id);
       }
     }
   };
 
-  inferenceWorker.onerror = (err) => {
-    console.error("[WorkerManager] Worker error:", err);
+  lane.worker.onerror = (err) => {
+    console.error(`[WorkerManager:${laneName}] Worker error:`, err);
   };
 
-  return inferenceWorker;
+  return lane.worker;
 }
 
 // ─── Communication ──────────────────────────────────────────
@@ -68,23 +75,25 @@ function getWorker(): Worker {
 /**
  * Send a message to the shared inference worker and wait for response.
  *
- * @param type - Message type (e.g., "init_face", "init_yolo", "get_embedding", "yolo_infer")
+ * @param type - Message type (e.g., "init_face", "get_embedding")
  * @param data - Payload to send
  * @param transfer - Optional Transferable[] for zero-copy transfer
  * @param timeoutMs - Timeout in milliseconds (default: 60000)
  * @returns Promise resolving with the worker's response
  */
-export function sendToWorker(
+function sendToLane(
+  lane: WorkerLane,
+  laneName: string,
   type: string,
   data?: unknown,
   transfer?: Transferable[],
   timeoutMs: number = 60000,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const id = `req_${++requestCounter}_${Date.now()}`;
-    const worker = getWorker();
+    const id = `req_${++lane.counter}_${Date.now()}`;
+    const worker = getWorker(lane, laneName);
 
-    callbacks.set(id, (result, error) => {
+    lane.callbacks.set(id, (result, error) => {
       if (error) {
         reject(error);
       } else if (result === null || result === undefined) {
@@ -96,29 +105,38 @@ export function sendToWorker(
 
     // Timeout
     const timeout = setTimeout(() => {
-      callbacks.delete(id);
-      timeoutMap.delete(id);
+      lane.callbacks.delete(id);
+      lane.timeouts.delete(id);
       reject(new Error(`Worker request "${type}" timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
-    timeoutMap.set(id, timeout);
+    lane.timeouts.set(id, timeout);
 
     try {
       worker.postMessage({ type, id, data }, transfer ?? []);
     } catch (err) {
       clearTimeout(timeout);
-      timeoutMap.delete(id);
-      callbacks.delete(id);
+      lane.timeouts.delete(id);
+      lane.callbacks.delete(id);
       reject(err);
     }
   });
+}
+
+export function sendToWorker(
+  type: string,
+  data?: unknown,
+  transfer?: Transferable[],
+  timeoutMs: number = 60000,
+): Promise<unknown> {
+  return sendToLane(faceLane, "face", type, data, transfer, timeoutMs);
 }
 
 /**
  * Check if the worker has been created.
  */
 export function isWorkerReady(): boolean {
-  return inferenceWorker !== null;
+  return faceLane.worker !== null;
 }
 
 // ─── Cleanup ────────────────────────────────────────────────
@@ -127,17 +145,19 @@ export function isWorkerReady(): boolean {
  * Terminate the shared worker and clear all pending callbacks.
  */
 export function terminateWorker(): void {
-  // Clear all pending timeouts
-  for (const timeout of timeoutMap.values()) {
-    clearTimeout(timeout);
-  }
-  timeoutMap.clear();
-  callbacks.clear();
+  for (const lane of [faceLane]) {
+    // Clear all pending timeouts
+    for (const timeout of lane.timeouts.values()) {
+      clearTimeout(timeout);
+    }
+    lane.timeouts.clear();
+    lane.callbacks.clear();
 
-  if (inferenceWorker) {
-    inferenceWorker.terminate();
-    inferenceWorker = null;
-  }
+    if (lane.worker) {
+      lane.worker.terminate();
+      lane.worker = null;
+    }
 
-  requestCounter = 0;
+    lane.counter = 0;
+  }
 }

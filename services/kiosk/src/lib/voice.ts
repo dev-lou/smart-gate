@@ -3,9 +3,11 @@
 /**
  * Kiosk Voice / Audio Module
  * ==========================
- * Offline audio feedback for the kiosk — no audio files, no internet:
+ * Offline audio feedback for the kiosk — no internet:
  *   - Chimes synthesized with the WebAudio API
- *   - Speech via the built-in browser speechSynthesis engine
+ *   - Human voice lines from /public/audio/*.mp3 when present
+ *     (welcome.mp3, denied.mp3, override.mp3) — a real recording beats
+ *     any device TTS. Missing files fall back to speechSynthesis.
  *
  * Sounds:
  *   - Grant:  pleasant two-tone chime + "Welcome to ISUFST"
@@ -148,18 +150,57 @@ function playChime(cue: VoiceCue): void {
 
 // ─── Speech ─────────────────────────────────────────────────
 
+/**
+ * Pick a natural-sounding female English voice for the gate.
+ * Device TTS varies by browser/OS, so this prefers known-natural female
+ * voices (Google US English, Microsoft Aria/Jenny/Natasha, Samsung) and
+ * falls back to any female-named English voice, then any English voice.
+ * Returns null when no English voice is loaded yet.
+ */
+function pickFemaleVoice(): SpeechSynthesisVoice | null {
+  if (typeof speechSynthesis === "undefined") return null;
+  const voices = speechSynthesis.getVoices();
+  const en = voices.filter((v) => v.lang.toLowerCase().startsWith("en"));
+  if (en.length === 0) return null;
+  // Known-natural female voices, in preference order
+  const preferred = [
+    "google us english", // Chrome/Android — warm female by default
+    "microsoft aria", // Windows natural female
+    "microsoft jenny", // Windows natural female
+    "microsoft natasha", // Windows female
+    "microsoft zira", // Windows female
+    "samantha", // Apple female
+  ];
+  for (const name of preferred) {
+    const hit = en.find((v) => v.name.toLowerCase().includes(name));
+    if (hit) return hit;
+  }
+  // Any voice whose name reads female
+  const femaleHint = en.find((v) =>
+    /female|girl|woman|aria|jenny|natasha|zira|samantha|victoria|tessa|fiona|veena|kanya/i.test(
+      v.name,
+    ),
+  );
+  if (femaleHint) return femaleHint;
+  // Avoid an obviously male default when there is a choice
+  const nonMale = en.find((v) => !/male|david|mark|guy|daniel|george|fred/i.test(v.name));
+  return nonMale ?? en[0];
+}
+
 function speak(text: string): void {
   if (typeof speechSynthesis === "undefined") return;
   try {
     const u = new SpeechSynthesisUtterance(text);
-    u.rate = 1.0;
-    u.pitch = 1.0;
-    u.volume = 0.9;
+    // Slightly slowed rate + lifted pitch reads warmer and less robotic
+    u.rate = 0.97;
+    u.pitch = 1.1;
+    u.volume = 1.0;
     u.lang = "en-US";
-    // Prefer an English voice if one is loaded
-    const voices = speechSynthesis.getVoices();
-    const en = voices.find((v) => v.lang.startsWith("en"));
-    if (en) u.voice = en;
+    const voice = pickFemaleVoice();
+    if (voice) {
+      u.voice = voice;
+      u.lang = voice.lang;
+    }
     speechSynthesis.cancel(); // Don't queue — latest message wins
     speechSynthesis.speak(u);
   } catch {
@@ -181,8 +222,54 @@ export function setVoiceSchool(initials: string): void {
   }
 }
 
+// ─── Human voice recordings ─────────────────────────────────
+// Drop real recordings in services/kiosk/public/audio/:
+//   welcome.mp3  — "Welcome to ISUFST." (grant)
+//   denied.mp3   — "Access denied. Please see the guard." (deny)
+//   override.mp3 — "Manual override." (override)
+// Any decent phone recorder works — record close, quiet room, female voice.
+// A missing/unplayable file silently falls back to speechSynthesis.
+const VOICE_FILES: Record<VoiceCue, string | null> = {
+  grant: "/audio/welcome.mp3",
+  deny: "/audio/denied.mp3",
+  override: "/audio/override.mp3",
+  unknown: null,
+};
+
+const voiceCache = new Map<string, HTMLAudioElement>();
+
+function playRecording(cue: VoiceCue, fallback: () => void): void {
+  const file = VOICE_FILES[cue];
+  if (!file || typeof Audio === "undefined") {
+    fallback();
+    return;
+  }
+  try {
+    let audio = voiceCache.get(file);
+    if (!audio) {
+      audio = new Audio(file);
+      audio.preload = "auto";
+      voiceCache.set(file, audio);
+    } else {
+      audio.currentTime = 0;
+    }
+    const current = audio;
+    // If the file is missing or undecodable, fall back to device speech.
+    const onError = () => {
+      current.removeEventListener("error", onError);
+      voiceCache.delete(file);
+      fallback();
+    };
+    current.addEventListener("error", onError, { once: true });
+    const playPromise = current.play();
+    if (playPromise) playPromise.catch(onError);
+  } catch {
+    fallback();
+  }
+}
+
 /**
- * Play the full audio cue: chime + voice line.
+ * Play the full audio cue: chime + human voice line (device speech fallback).
  */
 export function playCue(cue: VoiceCue): void {
   if (!voiceEnabled) return;
@@ -190,13 +277,13 @@ export function playCue(cue: VoiceCue): void {
 
   switch (cue) {
     case "grant":
-      speak(`Welcome to ${schoolInitials}.`);
+      playRecording(cue, () => speak(`Welcome to ${schoolInitials}.`));
       break;
     case "deny":
-      speak("Access denied. Please see the guard.");
+      playRecording(cue, () => speak("Access denied. Please see the guard."));
       break;
     case "override":
-      speak("Manual override.");
+      playRecording(cue, () => speak("Manual override."));
       break;
     case "unknown":
       // Beep only — do not talk to strangers at a gate

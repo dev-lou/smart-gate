@@ -110,7 +110,7 @@ describe("daily attendance summary", () => {
     expect(countArrivals(rows)).toBe(1);
   });
 
-  it("ignores denied reads — a uniform failure is not an arrival", () => {
+  it("ignores denied reads — a policy denial is not an arrival", () => {
     const rows = summarizeDay(
       [log("Lou", MORNING, false), log("Lou", MORNING, false), log("Lou", AFTERNOON, true)],
       day,

@@ -34,6 +34,22 @@ export const NOTICE_ABSENCE_CLEAR_MS = 10_000;
  *  far under the person's real similarity (0.26 before settling at 0.63). */
 export const UNKNOWN_DWELL_MS = 2_500;
 
+/**
+ * A settled "unknown face" card is taken down this quickly once the frame
+ * goes empty — the visitor clearly walked on, so the screen must reset to
+ * reading someone new instead of accusing the next arrival. The dwell clock
+ * restarts with it, so every face gets a fresh read.
+ */
+export const UNKNOWN_ABSENCE_CLEAR_MS = 2_000;
+
+/** True when the gate area has been empty long enough to retire a stale
+ *  unknown-face card and reset the recognition trackers for the next visitor.
+ *  A blink or one dropped detection frame never reads as "walked away". */
+export function shouldClearStaleScan(args: { faceFreeSince: number; now: number; ms?: number }): boolean {
+  if (args.faceFreeSince <= 0) return false;
+  return args.now - args.faceFreeSince >= (args.ms ?? UNKNOWN_ABSENCE_CLEAR_MS);
+}
+
 /** Per-person repeat suppression: a decision for the same person inside this
  *  window is still shown on screen, but writes no second access row. */
 export const PERSON_COOLDOWN_MS = 60_000;
@@ -50,15 +66,16 @@ export const PERSON_REDECIDE_MS = 4_000;
  * One hot frame is not a verdict: a motion-blurred frame can score 0.61 for
  * the wrong student and would previously grant immediately. The same identity
  * must win this many consecutive recognition ticks (~500ms each) before the
- * decision pipeline may run. A stranger flickering between identities never
- * confirms; the real student confirms in ~1.5s of holding still.
+ * decision pipeline may run — roughly a 1-2-3 count of holding still and
+ * looking at the terminal. A stranger flickering between identities never
+ * confirms; the real student confirms in ~2.5s of holding still.
  */
-export const CONFIRM_TICKS = 3;
+export const CONFIRM_TICKS = 5;
 
 /** Minimum margin of the winner over the runner-up identity. A lookalike
- *  collision (winner 0.66, runner-up 0.65) stays undecided — and therefore
+ *  collision (winner 0.71, runner-up 0.70) stays undecided — and therefore
  *  unknown — instead of granting the wrong person. */
-export const MARGIN_MIN = 0.05;
+export const MARGIN_MIN = 0.08;
 
 /** Consecutive-win tracker for one identity. */
 export interface ConfirmState {

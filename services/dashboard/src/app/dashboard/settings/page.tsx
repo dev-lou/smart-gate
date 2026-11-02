@@ -8,9 +8,6 @@ import {
   Settings,
   Save,
   CheckCircle2,
-  Palette,
-  BookOpen,
-  GraduationCap,
   ShieldCheck,
   SlidersHorizontal,
 } from "lucide-react";
@@ -21,23 +18,6 @@ interface Setting {
   key: string;
   value: string;
   description: string | null;
-}
-
-interface UniformType {
-  id: string;
-  name: string;
-  description: string | null;
-  class_id: number;
-  color_hex: string | null;
-  is_active: boolean;
-}
-
-interface CourseUniform {
-  id: string;
-  course: string;
-  uniform_name: string;
-  uniform_description: string | null;
-  class_id: number;
 }
 
 // Keys the system actually uses (kiosk reads these from system_settings)
@@ -68,16 +48,20 @@ const SETTING_META: Record<
     label: "Face Match Threshold",
     type: "number",
     description:
-      "Minimum cosine similarity (0-1) the kiosk needs before it accepts a face. Higher = stricter (fewer false accepts, more false rejects); lower = more permissive. 0.65 is the recommended default — the kiosk additionally requires 3 consecutive matching reads plus a clear margin over the next-closest profile, so a stranger is shown as Unknown instead of a wrong name.",
+      "Minimum cosine similarity (0-1) the kiosk needs before it accepts a face. Higher = stricter (fewer false accepts, more false rejects); lower = more permissive. 0.7 is the recommended default — the kiosk additionally requires 5 consecutive matching reads (~2.5s of holding still) plus a clear margin over the next-closest profile, so a stranger is shown as Unknown instead of a wrong name.",
     min: 0.3,
     max: 0.9,
     step: 0.05,
-  },
-  uniform_detection_enabled: {
-    label: "Uniform Detection",
-    type: "boolean",
-    description: "Enforce uniform checking at the gate before granting access.",
-  },
+  },    lockdown_mode: {
+      label: "Campus Lockdown",
+      type: "boolean",
+      description: "When ON the kiosk denies everyone with LOCKDOWN_ACTIVE. Guard override with reason still logs.",
+    },
+    lockdown_reason: {
+      label: "Lockdown Reason",
+      type: "text",
+      description: "Shown on kiosk + logs while lockdown is ON (e.g. Emergency drill 2PM).",
+    },
   gate_open_duration: {
     label: "Gate Open Duration (seconds)",
     type: "number",
@@ -103,59 +87,23 @@ const SETTING_META: Record<
 };
 
 const KNOWN_KEYS = Object.keys(SETTING_META);
-const COURSES = ["CBMSD", "CICI", "COAG", "Education"];
-
-function formatUniformLabel(u: string): string {
-  if (!u || u === "default") return "Standard";
-  return u
-    .replace(/^(cici_|cbmsd_|coag_|edu_|education_)/i, "")
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
 export default function SettingsPage() {
   const router = useRouter();
   const { pushToast } = useToast();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [settings, setSettings] = useState<Setting[]>([]);
-  const [uniforms, setUniforms] = useState<UniformType[]>([]);
-  const [mappings, setMappings] = useState<CourseUniform[]>([]);
 
   const loadAll = useCallback(async () => {
     const supabase = getSupabase();
     if (!supabase) return;
 
-    const [settingsRes, uniformsRes, mappingsRes] = await Promise.all([
-      supabase.from("system_settings").select("key, value, description"),
-      supabase.from("uniform_types").select("*").order("class_id", { ascending: true }),
-      supabase
-        .from("course_uniforms")
-        .select(`id, course, uniform_type_id, uniform_types!inner(name, description, class_id)`),
-    ]);
+    const settingsRes = await supabase.from("system_settings").select("key, value, description");
 
     if (settingsRes.error) {
       pushToast("error", `Settings: ${settingsRes.error.message}`);
     } else {
       setSettings(settingsRes.data ?? []);
-    }
-    if (uniformsRes.error) {
-      pushToast("error", `Uniforms: ${uniformsRes.error.message}`);
-    } else {
-      setUniforms(uniformsRes.data ?? []);
-    }
-    if (mappingsRes.error) {
-      pushToast("error", `Mappings: ${mappingsRes.error.message}`);
-    } else {
-      setMappings(
-        (mappingsRes.data ?? []).map((m: any) => ({
-          id: m.id,
-          course: m.course,
-          uniform_name: m.uniform_types.name,
-          uniform_description: m.uniform_types.description,
-          class_id: m.uniform_types.class_id,
-        })),
-      );
     }
     setLoading(false);
   }, [pushToast]);
@@ -183,7 +131,7 @@ export default function SettingsPage() {
     [settings],
   );
   const orphanKeys = useMemo(
-    () => settings.filter((s) => !KNOWN_KEYS.includes(s.key) && s.key !== "uniform_class_names"),
+    () => settings.filter((s) => !KNOWN_KEYS.includes(s.key)),
     [settings],
   );
 
@@ -219,7 +167,7 @@ export default function SettingsPage() {
             Settings
           </h1>
           <p className="text-surface-500 font-medium text-sm mt-1">
-            Gate behavior, recognition tuning, and uniform enforcement
+            Gate behavior, recognition tuning, lockdown, and guest-pass policy
           </p>
         </div>
         <button
@@ -295,154 +243,6 @@ export default function SettingsPage() {
             </div>
           </section>
 
-          {/* ─── 2. Uniform Types (READ-ONLY — tied to the trained model) ─── */}
-          <section className="bg-white rounded-2xl shadow-sm border border-surface-200 overflow-hidden">
-            <div className="px-6 py-4 border-b border-surface-100 bg-surface-50/50 flex items-center gap-2.5">
-              <Palette className="w-4 h-4 text-primary-600" />
-              <h2 className="font-bold text-surface-900 text-sm">Uniform Types</h2>
-              <span className="px-2 py-0.5 rounded-full text-[11px] font-black bg-primary-50 text-primary-700 border border-primary-100">
-                {uniforms.length} classes
-              </span>
-              <p className="text-xs text-surface-400 font-medium ml-auto hidden sm:block">
-                Fixed by the trained YOLO model — managed manually, not editable here
-              </p>
-            </div>
-            <div className="p-6">
-              <p className="text-sm text-surface-500 font-medium mb-4 flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-green-600 shrink-0" />
-                These classes come from your trained model. Adding or renaming them in this app
-                wouldn't change what the model can detect — so they're shown here for reference
-                only.
-              </p>
-              {uniforms.length === 0 ? (
-                <div className="p-8 bg-surface-50 rounded-xl text-center text-sm font-medium text-surface-400 border border-dashed border-surface-200">
-                  No uniform types found — run the uniform migration in your Supabase SQL editor.
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                  {uniforms.map((u) => (
-                    <div
-                      key={u.id}
-                      className={`border rounded-2xl p-4 transition-colors ${
-                        u.is_active
-                          ? "border-surface-200"
-                          : "border-surface-200 bg-surface-50 opacity-60"
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2 mb-2">
-                        <div className="flex items-center gap-2.5">
-                          <span
-                            className="w-6 h-6 rounded-lg border border-black/10 shrink-0"
-                            style={{ backgroundColor: u.color_hex || "#6366f1" }}
-                          />
-                          <div>
-                            <p className="font-bold text-surface-900 text-sm">
-                              {u.description || formatUniformLabel(u.name)}
-                            </p>
-                            <p className="text-[10px] font-mono font-semibold text-surface-400">
-                              {u.name}
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="px-2 py-0.5 rounded-md bg-surface-100 text-surface-600 text-[10px] font-black">
-                          Class {u.class_id}
-                        </span>
-                        <span
-                          className={`px-2 py-0.5 rounded-md text-[10px] font-black ${
-                            u.is_active ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600"
-                          }`}
-                        >
-                          {u.is_active ? "ACTIVE" : "DISABLED"}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </section>
-
-          {/* ─── 3. Course → Uniform Assignment (READ-ONLY) ─── */}
-          <section className="bg-white rounded-2xl shadow-sm border border-surface-200 overflow-hidden">
-            <div className="px-6 py-4 border-b border-surface-100 bg-surface-50/50 flex items-center gap-2.5">
-              <GraduationCap className="w-4 h-4 text-primary-600" />
-              <h2 className="font-bold text-surface-900 text-sm">Course Uniform Assignment</h2>
-              <p className="text-xs text-surface-400 font-medium ml-auto hidden sm:block">
-                Which uniforms each course is allowed to wear
-              </p>
-            </div>
-            <div className="p-6">
-              <p className="text-sm text-surface-500 font-medium mb-4 flex items-center gap-2">
-                <BookOpen className="w-4 h-4 text-primary-600 shrink-0" />
-                At the kiosk, a student's course is matched against the uniform they're wearing —
-                any uniform of the same course counts (e.g. CICI blazer/female/male all verify a
-                CICI student). This mapping is maintained with your training data.
-              </p>
-              {mappings.length === 0 ? (
-                <div className="p-8 bg-surface-50 rounded-xl text-center text-sm font-medium text-surface-400 border border-dashed border-surface-200">
-                  No course assignments yet — set them up in your Supabase SQL editor.
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {COURSES.map((course) => {
-                    const courseMappings = mappings.filter(
-                      (m) => m.course.toUpperCase() === course.toUpperCase(),
-                    );
-                    if (courseMappings.length === 0) return null;
-                    return (
-                      <div key={course} className="border border-surface-100 rounded-2xl p-4">
-                        <p className="text-xs font-black uppercase tracking-wider text-surface-500 mb-3 flex items-center gap-2">
-                          <BookOpen className="w-3.5 h-3.5 text-primary-500" />
-                          {course}
-                        </p>
-                        <div className="flex flex-wrap gap-2">
-                          {courseMappings.map((m) => (
-                            <span
-                              key={m.id}
-                              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-surface-50 border border-surface-200 text-xs font-bold text-surface-700"
-                            >
-                              {m.uniform_description || formatUniformLabel(m.uniform_name)}
-                              <span className="text-[10px] font-black text-surface-400">
-                                cls {m.class_id}
-                              </span>
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    );
-                  })}
-                  {mappings.filter(
-                    (m) => !COURSES.some((c) => c.toUpperCase() === m.course.toUpperCase()),
-                  ).length > 0 && (
-                    <div className="border border-amber-200 bg-amber-50/50 rounded-2xl p-4">
-                      <p className="text-xs font-black uppercase tracking-wider text-amber-700 mb-3 flex items-center gap-2">
-                        <ShieldCheck className="w-3.5 h-3.5" />
-                        Other courses
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        {mappings
-                          .filter(
-                            (m) => !COURSES.some((c) => c.toUpperCase() === m.course.toUpperCase()),
-                          )
-                          .map((m) => (
-                            <span
-                              key={m.id}
-                              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white border border-amber-200 text-xs font-bold text-surface-700"
-                            >
-                              {m.course}:{" "}
-                              {m.uniform_description || formatUniformLabel(m.uniform_name)}
-                            </span>
-                          ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </section>
-
           {/* ─── 4. Advanced (non-editable) ─── */}
           {orphanKeys.length > 0 && (
             <section className="bg-white rounded-2xl shadow-sm border border-surface-200 overflow-hidden">
@@ -478,7 +278,7 @@ export default function SettingsPage() {
             <div className="p-6 flex flex-wrap gap-3">
               <div className="px-4 py-3 rounded-xl bg-surface-50 border border-surface-200 text-xs font-semibold text-surface-600 flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-green-600" />
-                AI Models: face + uniform bundled on kiosk (offline)
+                AI Models: face bundled on kiosk (offline)
               </div>
               <div className="px-4 py-3 rounded-xl bg-surface-50 border border-surface-200 text-xs font-semibold text-surface-600 flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-green-600" />

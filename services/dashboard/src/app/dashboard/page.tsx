@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import { displayDecision } from "@/lib/decisionText";
+import { AiBriefing, AiChat } from "@/components/AiAssistant";
 import {
   LayoutDashboard,
   Users,
@@ -34,6 +36,8 @@ interface RecentLog {
   success: boolean;
   method: string;
   failure_reason: string | null;
+  reason_code: string | null;
+  decision_note: string | null;
   created_at: string;
 }
 
@@ -78,7 +82,7 @@ export default function DashboardPage() {
         supabase.from("kiosk_heartbeats").select("updated_at"),
         supabase
           .from("access_logs")
-          .select("id, person_name, success, method, failure_reason, created_at")
+          .select("id, person_name, success, method, failure_reason, reason_code, decision_note, created_at")
           .order("created_at", { ascending: false })
           .limit(6),
       ]).then(([students, activeStudents, logsToday, todaySuccesses, heartbeats, logs]) => {
@@ -173,6 +177,12 @@ export default function DashboardPage() {
         ))}
       </div>
 
+      {/* AI assistant — briefing + plain-English Q&A over the gate log */}
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-6">
+        <AiBriefing />
+        <AiChat />
+      </div>
+
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">
         {/* Recent activity */}
         <div className="xl:col-span-3 bg-white rounded-2xl shadow-sm border border-surface-200 overflow-hidden">
@@ -223,11 +233,7 @@ export default function DashboardPage() {
                     </p>
                     <p className="text-[11px] font-semibold text-surface-400 uppercase">
                       {log.method} ·{" "}
-                      {log.failure_reason
-                        ? log.failure_reason
-                        : log.success
-                          ? "Access granted"
-                          : "Denied"}
+                      {displayDecision(log)}
                     </p>
                   </div>
                   <span className="text-xs font-semibold text-surface-400 shrink-0">
@@ -269,7 +275,7 @@ export default function DashboardPage() {
             </div>
             <p className="font-bold text-surface-900">Settings</p>
             <p className="text-xs font-medium text-surface-500 mt-0.5">
-              Recognition threshold, gate timing, uniforms & course assignment
+              Recognition threshold, gate timing & policy
             </p>
           </Link>
 
@@ -307,7 +313,7 @@ export default function DashboardPage() {
             </div>
             <p className="font-bold text-surface-900">Access Logs</p>
             <p className="text-xs font-medium text-surface-500 mt-0.5">
-              Grants, denials, uniform failures & manual overrides
+              Grants, denials & manual overrides
             </p>
           </Link>
         </div>

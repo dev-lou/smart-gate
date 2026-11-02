@@ -29,6 +29,10 @@ export interface EnrolledFace {
   student_id: string;
   department: string;
   uniform_type: string;
+  /** 015 guest pass (null for students) */
+  host_name?: string | null;
+  purpose?: string | null;
+  valid_until?: string | null;
   /** 🔴 ACCURACY FIX #4: Multiple embeddings per student (different angles) */
   embeddings: Float32Array[];
 }
@@ -45,7 +49,7 @@ export interface MatchResult {
 
 import { sendToWorker } from "./workerManager";
 
-const MATCH_THRESHOLD = 0.65; // Cosine similarity threshold
+const MATCH_THRESHOLD = 0.7; // Cosine similarity threshold (strict: strangers stay unknown)
 const MODEL_BASE_URL = "https://storage.googleapis.com/mediapipe-models";
 // ✅ Updated 2026 model URLs — verified working
 // MediaPipe face detector:

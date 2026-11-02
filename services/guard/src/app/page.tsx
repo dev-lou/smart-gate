@@ -41,20 +41,12 @@ const DEMO_PASSWORD = "SmartGate2026!";
 
 // ─── Types ──────────────────────────────────────────────────
 
-interface CourseUniform {
-  course: string;
-  uniform_type_id: string;
-  uniform_name: string;
-  uniform_description: string;
-}
-
 interface Course {
   value: string;
   label: string;
 }
 
-// Course values MUST match course_uniforms.course in the database
-// (seeded by migration 005) — the kiosk matches uniforms by these names.
+// Department values used across enrollment + directory.
 // Adjust labels to your school's full department names if desired.
 const COURSES: Course[] = [
   { value: "CBMSD", label: "CBMSD" },
@@ -117,20 +109,13 @@ interface EnrollmentForm {
   name: string;
   purpose: string;
   contact: string;
+  host_name: string;
+  valid_until: string;
 }
 
 interface SyncStatus {
   status: "idle" | "syncing" | "success" | "error";
   message: string;
-}
-
-function getDepartmentBadge(dept: string): string {
-  const d = (dept || "").toUpperCase();
-  if (d.includes("CICI")) return "bg-blue-50 text-blue-700 border-blue-200";
-  if (d.includes("CBMSD")) return "bg-amber-50 text-amber-800 border-amber-200";
-  if (d.includes("COAG")) return "bg-emerald-50 text-emerald-800 border-emerald-200";
-  if (d.includes("EDU")) return "bg-purple-50 text-purple-700 border-purple-200";
-  return "bg-surface-100 text-surface-700 border-surface-200";
 }
 
 // ─── Component ──────────────────────────────────────────────
@@ -150,6 +135,8 @@ export default function GuardPage() {
     name: "",
     purpose: "",
     contact: "",
+    host_name: "",
+    valid_until: "",
   });
 
   // 🔴 ACCURACY FIX #4: Multiple photo slots instead of single photo
@@ -167,11 +154,12 @@ export default function GuardPage() {
 
   const [syncing, setSyncing] = useState<SyncStatus>({ status: "idle", message: "" });
   const [recentEnrollments, setRecentEnrollments] = useState<
-    Array<{ name: string; purpose: string; contact: string; time: string; photos: number }>
+    Array<{ name: string; purpose: string; contact: string; host_name: string; valid_until: string; time: string; photos: number }>
   >([]);
+  const [lockdownOn, setLockdownOn] = useState(false);
   const [currentTime, setCurrentTime] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  const [activeTab, setActiveTab] = useState<"home" | "directory" | "uniforms">("home");
+  const [activeTab, setActiveTab] = useState<"home" | "directory" | "guide">("home");
 
   useEffect(() => {
     const updateTime = () => {
@@ -211,7 +199,6 @@ export default function GuardPage() {
   const dismissToast = useCallback((id: number) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
-  const [courseUniforms, setCourseUniforms] = useState<Record<string, CourseUniform[]>>({});
 
   // ─── Branding (school name + initials from system_settings) ──
   const [schoolName, setSchoolName] = useState(
@@ -232,6 +219,7 @@ export default function GuardPage() {
           setSchoolName(map.school_name);
         }
         if (map.school_initials) setSchoolInitials(map.school_initials);
+        if (map.lockdown_mode !== undefined) setLockdownOn(map.lockdown_mode === "true");
       } catch {
         /* offline — keep fallback branding */
       }
@@ -427,6 +415,8 @@ export default function GuardPage() {
       name: "",
       purpose: "",
       contact: "",
+      host_name: "",
+      valid_until: "",
     });
     setEnrollStep(1);
   };
@@ -483,16 +473,42 @@ export default function GuardPage() {
       // Store all photo URLs as a JSON array in photo_url
       const photoUrlJson = JSON.stringify(photoUrls);
 
-      // 2. Create guest record — personal details only, no course or uniform.
+      // 2. Create guest record — personal details only.
       // Guests live in their own table (migration 011); the kiosk syncs it
-      // and skips the uniform check for these records.
-      const { error: insertError } = await supabase.from("guests").insert({
+      // and grants on face + live pass only.
+      // 015 E-Pass: default expiry 6PM today when guard leaves it blank.
+      let validUntil: string | null = null;
+      if (form.valid_until.trim()) {
+        const d = new Date(form.valid_until);
+        if (!Number.isNaN(d.getTime())) validUntil = d.toISOString();
+      }
+      if (!validUntil) {
+        const end = new Date();
+        end.setHours(18, 0, 0, 0);
+        if (end.getTime() < Date.now()) end.setDate(end.getDate() + 1);
+        validUntil = end.toISOString();
+      }
+      // 015 fallback: if the migration hasn't been run yet the E-Pass
+      // columns don't exist — insert the legacy shape instead so the
+      // enrollment still succeeds (pass defaults apply after migration).
+      const guestPayload: Record<string, unknown> = {
         name: form.name.trim(),
         purpose: form.purpose.trim(),
         contact: form.contact.trim() || null,
+        host_name: form.host_name.trim() || null,
+        valid_until: validUntil,
+        status: "active",
         photo_url: photoUrlJson,
         is_active: true,
-      });
+      };
+      let insertError = (await supabase.from("guests").insert(guestPayload)).error;
+      if (insertError && (insertError as { code?: string }).code === "42703") {
+        console.warn("[Guard] 015 not applied — saving guest without E-Pass columns. Run database/migrations/015_epass_lockdown_policy.sql.");
+        delete guestPayload.host_name;
+        delete guestPayload.valid_until;
+        delete guestPayload.status;
+        insertError = (await supabase.from("guests").insert(guestPayload)).error;
+      }
 
       if (insertError) throw insertError;
 
@@ -570,7 +586,6 @@ export default function GuardPage() {
       setAuthLoading(false);
     });
 
-    loadUniformTypes();
 
     return () => {
       mounted = false;
@@ -591,15 +606,29 @@ export default function GuardPage() {
     if (!supabase) return;
 
     try {
-      // "Recent" = the newest guest enrollments, newest first (max 10)
-      const { data, error } = await supabase
+      // "Recent" = the newest guest enrollments, newest first (max 10).
+      // Falls back to legacy columns when 015 hasn't been applied yet.
+      let data: unknown[] | null = null;
+      const recent = await supabase
         .from("guests")
-        .select("name, purpose, contact, photo_url, created_at")
+        .select("name, purpose, contact, host_name, valid_until, photo_url, created_at")
         .order("created_at", { ascending: false })
         .limit(10);
-
-      if (error) {
-        console.error("Failed to load recent enrollments:", error);
+      if (!recent.error) {
+        data = recent.data;
+      } else if ((recent.error as { code?: string }).code === "42703") {
+        const legacy = await supabase
+          .from("guests")
+          .select("name, purpose, contact, photo_url, created_at")
+          .order("created_at", { ascending: false })
+          .limit(10);
+        if (legacy.error) {
+          console.error("Failed to load recent enrollments:", legacy.error);
+          return;
+        }
+        data = legacy.data;
+      } else {
+        console.error("Failed to load recent enrollments:", recent.error);
         return;
       }
 
@@ -620,6 +649,8 @@ export default function GuardPage() {
             name: s.name ?? "Unknown",
             purpose: s.purpose ?? "",
             contact: s.contact ?? "",
+            host_name: s.host_name ?? "",
+            valid_until: s.valid_until ?? "",
             time: date
               ? date.toLocaleDateString(undefined, { month: "short", day: "numeric" }) +
                 " · " +
@@ -631,40 +662,6 @@ export default function GuardPage() {
       );
     } catch (err) {
       console.error("Failed to load recent enrollments:", err);
-    }
-  }
-
-  async function loadUniformTypes() {
-    const supabase = getSupabase();
-    if (!supabase) return;
-
-    try {
-      const { data: courseUniformsData } = await supabase.from("course_uniforms").select(`
-          course,
-          uniform_type_id,
-          uniform_types!inner(name, description)
-        `);
-
-      if (courseUniformsData) {
-        const grouped: Record<string, CourseUniform[]> = {};
-        // Supabase type inference wraps joined relations in arrays,
-        // but !inner join returns a single object at runtime.
-        // The `as any[]` is required because Supabase's generic types
-        // don't perfectly model the actual query shape.
-        for (const cu of courseUniformsData as any[]) {
-          const course = cu.course;
-          if (!grouped[course]) grouped[course] = [];
-          grouped[course].push({
-            course: cu.course,
-            uniform_type_id: cu.uniform_type_id,
-            uniform_name: cu.uniform_types.name,
-            uniform_description: cu.uniform_types.description || cu.uniform_types.name,
-          });
-        }
-        setCourseUniforms(grouped);
-      }
-    } catch (err) {
-      console.error("Failed to load uniform types:", err);
     }
   }
 
@@ -740,9 +737,7 @@ export default function GuardPage() {
       <div className="min-h-screen bg-surface-50 flex items-center justify-center p-4">
         <div className="w-full max-w-sm">
           <div className="text-center mb-8">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-white border border-surface-200 shadow-sm flex items-center justify-center">
-              <Lock className="w-8 h-8 text-primary-500" />
-            </div>
+            <img src="/isufst-logo.png" alt="ISUFST logo" className="w-16 h-16 mx-auto mb-4 rounded-2xl object-contain p-0.5 border border-surface-200 shadow-sm bg-white" />
             <h1 className="text-2xl font-bold text-surface-900">Guard Station</h1>
             <p className="text-surface-500 text-sm font-medium mt-1">
               Authorized enrollment access
@@ -823,7 +818,7 @@ export default function GuardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-surface-50 p-6">
+    <div className="min-h-screen bg-surface-50 p-4 sm:p-6">
       {/* Hidden canvas for photo capture */}
       <canvas ref={canvasRef} className="hidden" />
 
@@ -839,7 +834,7 @@ export default function GuardPage() {
       {/* FULLSCREEN camera overlay when active */}
       {activeSlotIndex !== null && (
         <div className="fixed inset-0 z-[60] bg-black">
-          <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
+          <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-contain p-0.5" />
           {/* Detection-only face box (visual helper — no recognition). */}
           <canvas
             ref={faceBoxCanvasRef}
@@ -847,7 +842,7 @@ export default function GuardPage() {
           />
 
           {/* Top instruction bar */}
-          <div className="absolute top-0 inset-x-0 p-6 pb-16 bg-gradient-to-b from-black/80 to-transparent text-center pointer-events-none">
+          <div className="absolute top-0 inset-x-0 p-4 sm:p-6 pb-16 bg-gradient-to-b from-black/80 to-transparent text-center pointer-events-none">
             <div className="inline-flex items-center gap-2 text-white text-lg sm:text-2xl font-bold drop-shadow">
               {PHOTO_ANGLES[activeSlotIndex].icon}
               {PHOTO_ANGLES[activeSlotIndex].instruction}
@@ -858,8 +853,8 @@ export default function GuardPage() {
           </div>
 
           {/* Bottom controls */}
-          <div className="absolute bottom-0 inset-x-0 p-8 pt-16 bg-gradient-to-t from-black/80 to-transparent">
-            <div className="flex items-end justify-center gap-6">
+          <div className="absolute bottom-0 inset-x-0 p-5 sm:p-8 pt-16 bg-gradient-to-t from-black/80 to-transparent">
+            <div className="flex items-end justify-center gap-4 sm:gap-6">
               <button
                 onClick={stopCamera}
                 className="px-6 py-3 bg-white/10 hover:bg-white/20 backdrop-blur border border-white/30 text-white rounded-full transition-colors flex items-center gap-2 cursor-pointer"
@@ -899,10 +894,8 @@ export default function GuardPage() {
       {/* ─── Unified Institutional Header (No Stacked Bars) ─── */}
       <header className="bg-white rounded-2xl border border-surface-200 shadow-xs p-4 sm:p-5 mb-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-xl bg-primary-600 flex items-center justify-center text-white font-black text-[10px] sm:text-xs shadow-sm shrink-0">
-            {schoolInitials}
-          </div>
-          <div>
+          <img src="/isufst-logo.png" alt="ISUFST logo" className="w-11 h-11 rounded-xl object-contain p-0.5 shadow-sm shrink-0 bg-white" />
+          <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-black text-surface-900 tracking-tight">Guard Station</h1>
               <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-primary-50 text-primary-700 border border-primary-100">
@@ -910,7 +903,7 @@ export default function GuardPage() {
               </span>
             </div>
             <p
-              className="text-surface-500 text-xs font-medium truncate max-w-[44rem]"
+              className="text-surface-500 text-xs font-medium truncate max-w-full sm:max-w-[44rem]"
               title={schoolName}
             >
               <span className="font-bold text-primary-600">{schoolName}</span>
@@ -921,7 +914,7 @@ export default function GuardPage() {
         </div>
 
         {/* Center: Integrated Navigation Tabs */}
-        <nav className="flex items-center gap-1.5 bg-surface-100 p-1.5 rounded-xl border border-surface-200/80 self-start lg:self-center overflow-x-auto">
+        <nav className="flex items-center gap-1.5 bg-surface-100 p-1.5 rounded-xl border border-surface-200/80 self-stretch sm:self-start lg:self-center overflow-x-auto max-w-full">
           <button
             onClick={() => setActiveTab("home")}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap ${
@@ -949,15 +942,14 @@ export default function GuardPage() {
           </button>
 
           <button
-            onClick={() => setActiveTab("uniforms")}
+            onClick={() => setActiveTab("guide")}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer whitespace-nowrap ${
-              activeTab === "uniforms"
+              activeTab === "guide"
                 ? "bg-white text-surface-900 shadow-xs"
                 : "text-surface-600 hover:text-surface-900"
             }`}
           >
-            <BookOpen className="w-4 h-4 text-primary-600" />
-            <span>Uniform & Photo Guide</span>
+            <BookOpen className="w-4 h-4 text-primary-600" />              <span>Campus Guide</span>
           </button>
         </nav>
 
@@ -1157,7 +1149,7 @@ export default function GuardPage() {
                               <img
                                 src={slot.preview}
                                 alt={angle.label}
-                                className="w-full h-full object-cover"
+                                className="w-full h-full object-contain p-0.5"
                               />
                             ) : (
                               <div className="text-center p-2">
@@ -1285,7 +1277,7 @@ export default function GuardPage() {
                 </div>
               )}
 
-              {/* STEP 2: GUEST INFORMATION (personal details only — no course/uniform) */}
+              {/* STEP 2: GUEST INFORMATION (personal details only) */}
               {enrollStep === 2 && (
                 <div className="bg-white rounded-2xl p-6 border border-surface-200 shadow-sm animate-in fade-in duration-200">
                   <div className="mb-5">
@@ -1338,6 +1330,33 @@ export default function GuardPage() {
                         className="input-field"
                       />
                     </div>
+
+                    <div>
+                      <label className="block text-sm text-surface-700 mb-1.5 font-bold">
+                        Host / Person to visit{" "}
+                        <span className="font-medium text-surface-400">(optional)</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={form.host_name}
+                        onChange={(e) => handleInputChange("host_name", e.target.value)}
+                        placeholder="e.g., Prof. Cruz, Registrar"
+                        className="input-field"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm text-surface-700 mb-1.5 font-bold">
+                        Pass valid until{" "}
+                        <span className="font-medium text-surface-400">(defaults 6PM today)</span>
+                      </label>
+                      <input
+                        type="datetime-local"
+                        value={form.valid_until}
+                        onChange={(e) => handleInputChange("valid_until", e.target.value)}
+                        className="input-field"
+                      />
+                    </div>
                   </div>
                 </div>
               )}
@@ -1383,6 +1402,18 @@ export default function GuardPage() {
                         </span>
                       </div>
                       <div>
+                        <span className="text-xs text-surface-500 font-medium block">Host</span>
+                        <span className="font-bold text-surface-900">
+                          {form.host_name || "—"}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-xs text-surface-500 font-medium block">Valid until</span>
+                        <span className="font-bold text-surface-900">
+                          {form.valid_until ? new Date(form.valid_until).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "Today 6PM"}
+                        </span>
+                      </div>
+                      <div>
                         <span className="text-xs text-surface-500 font-medium block">
                           Visitor Type
                         </span>
@@ -1390,9 +1421,9 @@ export default function GuardPage() {
                       </div>
                       <div>
                         <span className="text-xs text-surface-500 font-medium block">
-                          Uniform Check
+                          Policy Check
                         </span>
-                        <span className="font-medium text-surface-800">Skipped for guests</span>
+                        <span className="font-medium text-surface-800">Face + pass only</span>
                       </div>
                     </div>
                   </div>
@@ -1421,7 +1452,7 @@ export default function GuardPage() {
                               <img
                                 src={slot.preview}
                                 alt={slot.angle.label}
-                                className="w-full h-full object-cover"
+                                className="w-full h-full object-contain p-0.5"
                               />
                             ) : (
                               <span className="text-xs text-surface-400 font-medium">
@@ -1578,9 +1609,16 @@ export default function GuardPage() {
                   <Camera className="w-3.5 h-3.5 text-indigo-600" />
                   <span>5-Angle Face Scanner Ready</span>
                 </span>
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-surface-50 text-surface-700 text-xs font-bold border border-surface-200">
-                  <Shield className="w-3.5 h-3.5 text-emerald-600" />
-                  <span>YOLO11 Uniform AI Active</span>
+                <span
+                  className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold border ${
+                    lockdownOn
+                      ? "bg-rose-50 text-rose-700 border-rose-200"
+                      : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                  }`}
+                  title={lockdownOn ? "LOCKDOWN ACTIVE — deny all, override only" : "Policy mode — face + guest pass."}
+                >
+                  <Shield className={`w-3.5 h-3.5 ${lockdownOn ? "text-rose-600" : "text-emerald-600"}`} />
+                  <span>{lockdownOn ? "LOCKDOWN ACTIVE" : "POLICY ON"}</span>
                 </span>
               </div>
             </div>
@@ -1740,10 +1778,9 @@ export default function GuardPage() {
               </span>
             </div>
             <button
-              onClick={() => setActiveTab("uniforms")}
+              onClick={() => setActiveTab("guide")}
               className="text-primary-600 hover:text-primary-700 font-bold hover:underline self-start sm:self-auto cursor-pointer"
-            >
-              View Uniform & Camera Guide →
+            >                View Campus & Camera Guide →
             </button>
           </div>
         </div>
@@ -1929,8 +1966,8 @@ export default function GuardPage() {
         </div>
       )}
 
-      {/* ─── TAB 3: UNIFORM & PHOTO GUIDE (DEDICATED REFERENCE HANDBOOK) ─── */}
-      {activeTab === "uniforms" && (
+      {/* ─── TAB 3: CAMPUS & PHOTO GUIDE (DEDICATED REFERENCE HANDBOOK) ─── */}
+      {activeTab === "guide" && (
         <div className="space-y-6">
           {/* Guide Header */}
           <div className="bg-white p-6 sm:p-7 rounded-3xl border border-surface-200 shadow-xs flex items-center gap-4">
@@ -1939,11 +1976,11 @@ export default function GuardPage() {
             </div>
             <div>
               <h2 className="text-xl sm:text-2xl font-black text-surface-900 tracking-tight">
-                Campus Uniform & Biometric Photo Guide
+                Campus & Biometric Photo Guide
               </h2>
               <p className="text-surface-500 text-xs sm:text-sm font-medium mt-0.5">
-                Official guidelines for security guards: approved department uniforms and face
-                capture standards.
+                Official guidelines for security guards: department reference and face capture
+                standards.
               </p>
             </div>
           </div>
@@ -1995,69 +2032,6 @@ export default function GuardPage() {
                   <li>Never photograph a photo from another phone or ID card</li>
                 </ul>
               </div>
-            </div>
-          </div>
-
-          {/* Section 2: Prescribed Campus Uniforms by Department */}
-          <div className="bg-white p-6 sm:p-8 rounded-3xl border border-surface-200 shadow-xs space-y-6">
-            <div className="flex items-center justify-between border-b border-surface-100 pb-4">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-primary-600 shrink-0">
-                  <Shield className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-black text-surface-900">
-                    Approved Department Uniforms
-                  </h3>
-                  <p className="text-xs text-surface-500 font-medium">
-                    Verified by YOLO11 Vision Model at Turnstiles
-                  </p>
-                </div>
-              </div>
-              <span className="text-xs font-black px-3 py-1 rounded-xl bg-surface-100 text-surface-700 border border-surface-200">
-                4 Departments Active
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {COURSES.map((c) => {
-                const uniforms = courseUniforms[c.value];
-                const deptBadge = getDepartmentBadge(c.value);
-                return (
-                  <div
-                    key={c.value}
-                    className="p-5 bg-surface-50/70 border border-surface-200 rounded-2xl hover:bg-surface-50 transition-colors space-y-3"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span
-                        className={`text-sm font-black px-3 py-1 rounded-full border ${deptBadge}`}
-                      >
-                        {c.label}
-                      </span>
-                      <span className="text-xs text-surface-400 font-semibold">
-                        {uniforms?.length || 0} approved style
-                        {(uniforms?.length || 0) !== 1 ? "s" : ""}
-                      </span>
-                    </div>
-                    {uniforms && uniforms.length > 0 ? (
-                      <div className="flex flex-wrap gap-2">
-                        {uniforms.map((u) => (
-                          <span
-                            key={u.uniform_type_id}
-                            className="text-xs font-bold bg-white border border-surface-200 text-surface-800 px-3 py-1.5 rounded-xl shadow-2xs"
-                          >
-                            {u.uniform_description}
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-xs text-surface-400 italic">
-                        Standard institutional attire
-                      </p>
-                    )}
-                  </div>
-                );
-              })}
             </div>
           </div>
 

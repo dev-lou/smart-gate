@@ -7,7 +7,7 @@ import { ConsoleFilterClient } from "@/components/ConsoleFilterClient";
 
 export const metadata: Metadata = {
   title: "Smart Gate — Access Control",
-  description: "AI-powered gate kiosk with face recognition & uniform detection",
+  description: "AI-powered gate kiosk with face recognition, guest passes & lockdown policy",
   manifest: "/manifest.json",
   icons: {
     icon: [{ url: "/icon-192.svg", type: "image/svg+xml" }],

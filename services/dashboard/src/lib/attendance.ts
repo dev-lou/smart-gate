@@ -123,7 +123,7 @@ function sameLocalDay(a: Date, b: Date): boolean {
 /**
  * Collapse a day of granted reads into one arrival per session per person.
  *
- * Denied reads are excluded — a uniform failure is not an arrival. Ordering is
+ * Denied reads are excluded — a policy denial is not an arrival. Ordering is
  * by first arrival so the panel reads like a roll call.
  */
 export function summarizeDay(
@@ -158,6 +158,65 @@ export function summarizeDay(
     const bKey = b.amFirst ?? b.pmFirst ?? "";
     return aKey.localeCompare(bKey);
   });
+}
+
+/**
+ * Collapse repeat granted reads for printable reports.
+ *
+ * The access log itself stays a raw audit trail — every grant is recorded,
+ * which is exactly what you want when a kiosk loops or a dispute lands on
+ * your desk. But a printed report that lists Lou seven times for one hour at
+ * the gate is unreadable, so the report keeps only the FIRST granted read
+ * per person per session per calendar day (morning / afternoon, split at
+ * noon — the same rule as the attendance panel) and counts the rest as
+ * collapsed repeats.
+ *
+ * Deliberately conservative about what may disappear:
+ *   • every DENIED read is kept — each denial is a real event;
+ *   • every NAMELESS read is kept — two unknowns are not the same person;
+ *   • unparseable timestamps are kept — never silently drop a row.
+ *
+ * Returns rows oldest-first so the report reads top-down like a logbook.
+ */
+export interface CollapseResult<T> {
+  rows: T[];
+  /** Granted reads folded into an earlier same-session row. */
+  collapsed: number;
+}
+
+export function collapseRepeats<T extends AccessLogLike>(logs: T[]): CollapseResult<T> {
+  const byTime = [...logs].sort((a, b) => {
+    const ta = parse(a.device_timestamp)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+    const tb = parse(b.device_timestamp)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+    return ta - tb;
+  });
+
+  const seen = new Set<string>();
+  const rows: T[] = [];
+  let collapsed = 0;
+
+  for (const log of byTime) {
+    if (!log.success) {
+      rows.push(log);
+      continue;
+    }
+    const name = (log.person_name || "").trim();
+    const at = parse(log.device_timestamp);
+    const session = sessionOf(log.device_timestamp);
+    if (!name || !at || !session) {
+      rows.push(log);
+      continue;
+    }
+    const key = `${name.toLowerCase()}|${at.getFullYear()}-${at.getMonth()}-${at.getDate()}|${session}`;
+    if (seen.has(key)) {
+      collapsed += 1;
+      continue;
+    }
+    seen.add(key);
+    rows.push(log);
+  }
+
+  return { rows, collapsed };
 }
 
 /** Total arrivals (one per session per person) — the number a roll call counts. */

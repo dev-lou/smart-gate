@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import {
+  Calendar,
+  CheckCircle2,
+  ChevronDown,
   ClipboardList,
   RefreshCw,
-  CheckCircle2,
   XCircle,
   SearchX,
   Printer,
@@ -16,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 import {
+  collapseRepeats,
   countArrivals,
   formatRelative,
   formatScanClock,
@@ -23,6 +26,7 @@ import {
   summarizeDay,
   type AccessLogLike,
 } from "@/lib/attendance";
+import { displayDecision } from "@/lib/decisionText";
 
 interface AccessLog {
   id: string;
@@ -31,8 +35,9 @@ interface AccessLog {
   method: string;
   success: boolean;
   confidence: number | null;
-  uniform_ok: boolean | null;
   failure_reason: string | null;
+  reason_code: string | null;
+  decision_note: string | null;
   gate_state: string | null;
   direction: string | null;
   device_timestamp: string;
@@ -47,6 +52,14 @@ export default function LogsPage() {
   const [error, setError] = useState("");
   const [filter, setFilter] = useState<"all" | "granted" | "denied">("all");
   const [dateRange, setDateRange] = useState("24h");
+  const [rangeOpen, setRangeOpen] = useState(false);
+  const rangeRef = useRef<HTMLDivElement>(null);
+  const RANGES = [
+    { value: "1h", label: "Last hour" },
+    { value: "24h", label: "Last 24 hours" },
+    { value: "7d", label: "Last 7 days" },
+    { value: "30d", label: "Last 30 days" },
+  ] as const;
   const [search, setSearch] = useState("");
   const [reportOpen, setReportOpen] = useState(false);
   /**
@@ -75,6 +88,23 @@ export default function LogsPage() {
   useEffect(() => {
     if (authReady) void loadLogs();
   }, [authReady, filter, dateRange]);
+
+  // Close the range menu on outside click / Escape.
+  useEffect(() => {
+    if (!rangeOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (rangeRef.current && !rangeRef.current.contains(e.target as Node)) setRangeOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setRangeOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [rangeOpen]);
 
   async function loadLogs() {
     const supabase = getSupabase();
@@ -127,7 +157,7 @@ export default function LogsPage() {
     startOfToday.setHours(0, 0, 0, 0);
     const { data: todayData } = await supabase
       .from("access_logs")
-      .select("person_name, success, device_timestamp, direction")
+      .select("person_name, person_type, success, device_timestamp, direction")
       .gte("device_timestamp", startOfToday.toISOString())
       .eq("success", true)
       .order("device_timestamp", { ascending: true })
@@ -139,6 +169,16 @@ export default function LogsPage() {
 
   const attendance = summarizeDay(todayGrants, new Date());
   const arrivals = countArrivals(attendance);
+  // 008 entries-today: distinct persons granted today (entry-only, no IN/OUT).
+  const entriesToday = useMemo(() => {
+    const seen = new Map<string, { name: string; type: string }>();
+    for (const g of todayGrants as unknown as { person_name: string | null; person_type: string | null }[]) {
+      const key = (g.person_name || "Unknown").toLowerCase();
+      if (!seen.has(key)) seen.set(key, { name: g.person_name || "Unknown", type: g.person_type || "" });
+    }
+    const all = [...seen.values()];
+    return { total: all.length, students: all.filter((p) => p.type !== "guest").length, guests: all.filter((p) => p.type === "guest").length };
+  }, [todayGrants]);
 
   // ─── Client-side name search over the loaded (capped) rows ───
   const visibleLogs = useMemo(() => {
@@ -149,7 +189,9 @@ export default function LogsPage() {
         (l.person_name || "").toLowerCase().includes(q) ||
         (l.person_type || "").toLowerCase().includes(q) ||
         (l.method || "").toLowerCase().includes(q) ||
-        (l.failure_reason || "").toLowerCase().includes(q),
+        (l.failure_reason || "").toLowerCase().includes(q) ||
+        (l.reason_code || "").toLowerCase().includes(q) ||
+        (l.decision_note || "").toLowerCase().includes(q),
     );
   }, [logs, search]);
 
@@ -173,6 +215,22 @@ export default function LogsPage() {
     };
   }, [visibleLogs]);
 
+  // ─── Report rows: one arrival per person per session ───
+  // The table above stays the raw audit trail (every grant logged), but the
+  // printable report collapses Lou's seven same-hour grants into his single
+  // first read of the session. Denied and nameless rows are always kept.
+  const collapsedReport = useMemo(() => {
+    const { rows, collapsed } = collapseRepeats(visibleLogs);
+    const at = (iso: string) => {
+      const t = new Date(iso).getTime();
+      return Number.isNaN(t) ? 0 : t;
+    };
+    return {
+      rows: [...rows].sort((a, b) => at(b.device_timestamp) - at(a.device_timestamp)),
+      collapsed,
+    };
+  }, [visibleLogs]);
+
   const dateRangeLabel =
     dateRange === "1h"
       ? "Last hour"
@@ -191,15 +249,15 @@ export default function LogsPage() {
       "Direction",
       "Status",
       "Confidence %",
-      "Uniform OK",
+      "Reason Code",
+      "Decision",
       "Gate",
-      "Reason",
     ];
     const esc = (v: string | number | null | undefined) => {
       const s = v === null || v === undefined ? "" : String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const rows = visibleLogs.map((l) =>
+    const rows = collapsedReport.rows.map((l) =>
       [
         formatScanTime(l.device_timestamp),
         l.person_name || "Unknown",
@@ -208,14 +266,15 @@ export default function LogsPage() {
         l.direction || "",
         l.success ? "GRANTED" : "DENIED",
         l.confidence !== null ? Math.round(l.confidence * 100) : "",
-        l.uniform_ok === null ? "" : l.uniform_ok ? "OK" : "FAIL",
+        (l as AccessLog).reason_code || "",
+        displayDecision(l as AccessLog),
         l.gate_state || "",
-        l.failure_reason || "",
       ]
         .map(esc)
         .join(","),
     );
-    const csv = [header.join(","), ...rows].join("\n");
+    const note = `Collapses repeats: ${visibleLogs.length} reads -> ${collapsedReport.rows.length} lines (${collapsedReport.collapsed} repeat${collapsedReport.collapsed === 1 ? "" : "s"} hidden).`;
+    const csv = [`# ${note}`, header.join(","), ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -239,10 +298,10 @@ export default function LogsPage() {
             Access Logs
           </h1>
           <p className="text-surface-500 font-medium text-sm mt-1">
-            {logs.length} events in selected period
+            {logs.length} events in selected period · {entriesToday.total} entered today ({entriesToday.students} students, {entriesToday.guests} guests)
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => setReportOpen(true)}
             disabled={loading || visibleLogs.length === 0}
@@ -293,16 +352,42 @@ export default function LogsPage() {
           ))}
         </div>
 
-        <select
-          value={dateRange}
-          onChange={(e) => setDateRange(e.target.value)}
-          className="px-4 py-2 bg-white border border-surface-200 rounded-xl text-surface-900 font-bold text-sm focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
-        >
-          <option value="1h">Last hour</option>
-          <option value="24h">Last 24 hours</option>
-          <option value="7d">Last 7 days</option>
-          <option value="30d">Last 30 days</option>
-        </select>
+        <div ref={rangeRef} className="relative">
+          <button
+            type="button"
+            onClick={() => setRangeOpen((o) => !o)}
+            aria-haspopup="listbox"
+            aria-expanded={rangeOpen}
+            className="px-4 py-2 bg-white border border-surface-200 rounded-xl text-surface-900 font-bold text-sm flex items-center gap-2 hover:bg-surface-50 focus:border-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500/20"
+          >
+            <Calendar className="w-4 h-4 text-surface-400" />
+            {RANGES.find((r) => r.value === dateRange)?.label}
+            <ChevronDown className={`w-4 h-4 text-surface-400 transition-transform ${rangeOpen ? "rotate-180" : ""}`} />
+          </button>
+          {rangeOpen && (
+            <div role="listbox" className="absolute right-0 z-30 mt-2 w-44 bg-white border border-surface-200 rounded-xl shadow-lg overflow-hidden py-1">
+              {RANGES.map((r) => (
+                <button
+                  key={r.value}
+                  type="button"
+                  role="option"
+                  aria-selected={dateRange === r.value}
+                  onClick={() => {
+                    setDateRange(r.value);
+                    setRangeOpen(false);
+                  }}
+                  className={`w-full text-left px-4 py-2 text-sm font-bold transition-colors ${
+                    dateRange === r.value
+                      ? "bg-primary-50 text-primary-700"
+                      : "text-surface-700 hover:bg-surface-50"
+                  }`}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Today's attendance — one arrival per session, per person. A student
@@ -382,9 +467,9 @@ export default function LogsPage() {
                   <th className="table-header">Direction</th>
                   <th className="table-header">Status</th>
                   <th className="table-header">Confidence</th>
-                  <th className="table-header">Uniform</th>
-                  <th className="table-header">Gate</th>
                   <th className="table-header">Reason</th>
+                  <th className="table-header">Gate</th>
+                  <th className="table-header">Decision</th>
                 </tr>
               </thead>
               <tbody>
@@ -436,19 +521,9 @@ export default function LogsPage() {
                       {log.confidence ? `${(log.confidence * 100).toFixed(0)}%` : "—"}
                     </td>
                     <td className="table-cell">
-                      {log.uniform_ok !== null ? (
-                        <span
-                          className={`font-bold flex items-center gap-1 text-xs ${log.uniform_ok ? "text-green-600" : "text-red-600"}`}
-                        >
-                          {log.uniform_ok ? (
-                            <>
-                              <CheckCircle2 className="w-3 h-3" /> OK
-                            </>
-                          ) : (
-                            <>
-                              <XCircle className="w-3 h-3" /> FAIL
-                            </>
-                          )}
+                      {(log.reason_code || log.failure_reason) ? (
+                        <span className="px-2 py-1 rounded-md text-[11px] font-black bg-surface-100 text-surface-700 font-mono whitespace-nowrap">
+                          {log.reason_code || "—"}
                         </span>
                       ) : (
                         <span className="text-surface-400 font-medium">—</span>
@@ -470,7 +545,7 @@ export default function LogsPage() {
                       )}
                     </td>
                     <td className="table-cell text-surface-500 font-medium text-xs max-w-48 truncate">
-                      {log.failure_reason || "—"}
+                      {displayDecision(log)}
                     </td>
                   </tr>
                 ))}
@@ -508,8 +583,11 @@ export default function LogsPage() {
                 <p className="text-sm text-surface-500 font-medium mt-1">
                   {dateRangeLabel} · Status: {filter === "all" ? "All" : filter} ·
                   {search.trim() ? ` Search: "${search.trim()}" ·` : ""} Generated{" "}
-                  {new Date().toLocaleString()} · {report.total} event
-                  {report.total === 1 ? "" : "s"}
+                  {new Date().toLocaleString()} · {collapsedReport.rows.length} arrival
+                  {collapsedReport.rows.length === 1 ? "" : "s"}
+                  {collapsedReport.collapsed > 0
+                    ? ` (${collapsedReport.collapsed} repeat scan${collapsedReport.collapsed === 1 ? "" : "s"} collapsed — first read per person per session)`
+                    : ""}
                 </p>
               </div>
 
@@ -568,7 +646,7 @@ export default function LogsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleLogs.map((l) => (
+                  {collapsedReport.rows.map((l) => (
                     <tr key={l.id} className="border-b border-surface-100">
                       <td className="py-2 pr-3 whitespace-nowrap text-xs">
                         {formatScanTime(l.device_timestamp)}
@@ -576,7 +654,7 @@ export default function LogsPage() {
                       <td className="py-2 pr-3 font-bold">{l.person_name || "Unknown"}</td>
                       <td className="py-2 pr-3 uppercase font-mono text-xs">{l.method}</td>
                       <td className="py-2 pr-3 font-bold">{l.success ? "GRANTED" : "DENIED"}</td>
-                      <td className="py-2 text-xs text-surface-600">{l.failure_reason || "—"}</td>
+                      <td className="py-2 text-xs text-surface-600">{displayDecision(l)}</td>
                     </tr>
                   ))}
                 </tbody>

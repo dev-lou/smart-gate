@@ -19,8 +19,8 @@ const ASSET_CACHE = `${CACHE_PREFIX}-${CACHE_VERSION}-assets`;
 const MODEL_CACHE = `${CACHE_PREFIX}-${CACHE_VERSION}-models`;
 const CACHE_NAMES = [APP_CACHE, ASSET_CACHE, MODEL_CACHE];
 
-// Cache the local model during the first online install so the kiosk can
-// start uniform detection after the tablet goes offline.
+// Cache the app shell during the first online install so the kiosk boots
+// offline. Face models are cached on first access (see MODEL_URLS).
 const STATIC_ASSETS = [
   "/",
   "/manifest.json",
@@ -28,7 +28,6 @@ const STATIC_ASSETS = [
   "/icon-512.png",
   "/icon-192.svg",
   "/icon-512.svg",
-  "/models/uniform_yolo11n.onnx",
 ];
 
 // 🛡️ AI model URLs to cache for offline face recognition + detection
