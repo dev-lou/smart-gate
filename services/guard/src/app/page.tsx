@@ -834,7 +834,7 @@ export default function GuardPage() {
       {/* FULLSCREEN camera overlay when active */}
       {activeSlotIndex !== null && (
         <div className="fixed inset-0 z-[60] bg-black">
-          <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-contain p-0.5" />
+          <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
           {/* Detection-only face box (visual helper — no recognition). */}
           <canvas
             ref={faceBoxCanvasRef}

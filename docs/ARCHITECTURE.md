@@ -2,307 +2,284 @@
 
 ## Overview
 
-The Smart Gate System uses a **distributed edge + cloud architecture** where all AI inference runs **in the browser** on a tablet device. There is no server-side AI, no Python backend, and no Raspberry Pi. The system follows a three-tier design:
+The Smart Gate System uses a **distributed edge + cloud architecture** where all AI
+inference runs **in the browser** on a tablet. There is no server-side AI, no Python
+backend, and no Raspberry Pi. Three tiers:
+
+1. **Edge** — the tablet kiosk: detection, recognition, confirmation, policy, decision, log.
+2. **Cloud** — Supabase: records, enrolment photos, staff auth, kiosk health, briefing cache.
+3. **Control** — the ESP32: one servo, its own hotspot, and a button.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                   1. EDGE LAYER (Tablet Kiosk)                    │
 │                                                                  │
-│  ┌──────────────┐  ┌──────────────────┐  ┌──────────────────┐  │
-│  │  Camera Feed  │  │  MediaPipe Face  │  │  ArcFace ONNX    │  │
-│  │  (facingMode  │──►  Detector        │──►  Face Recognizer │  │
-│  │   =environment)│  │  (WASM)         │  │  (Web Worker)    │  │
-│  └──────────────┘  └──────────────────┘  └────────┬─────────┘  │
-│                                                   │             │
-│                          ┌──────────────────┐     │             │
-│                          │  YOLO11n Uniform  │◄────┘             │
-│                          │  Detector (Worker)│                   │
-│                          └────────┬─────────┘                   │
-│                                   │                             │
-│                          ┌────────▼─────────┐                   │
-│                          │  Access Decision  │                   │
-│                          │  + Audit Logging   │                   │
-│                          └────────┬─────────┘                   │
-│                                   │                             │
-│                    ┌───────────────▼───────────────┐            │
-│                    │      IndexedDB (idb)           │            │
-│                    │  • Students + embeddings      │            │
-│                    │  • Access logs (offline queue) │            │
-│                    │  • System settings            │            │
-│                    └───────────────┬───────────────┘            │
-└────────────────────────────────────┼────────────────────────────┘
-                                     │ HTTPS Sync
-┌────────────────────────────────────┼────────────────────────────┐
+│  ┌──────────────┐   ┌──────────────────┐   ┌──────────────────┐  │
+│  │ Camera feed  │──►│ MediaPipe face   │──►│ ArcFace ONNX     │  │
+│  │ (environment)│   │ detector (WASM)  │   │ (Web Worker)     │  │
+│  └──────────────┘   └──────────────────┘   └────────┬─────────┘  │
+│                                                     │            │
+│                          ┌──────────────────┐       │            │
+│                          │ Confirmation +   │◄──────┘            │
+│                          │ policy (5 reads, │                    │
+│                          │ 0.08 margin)     │                    │
+│                          └────────┬─────────┘                    │
+│                                   │                              │
+│                          ┌────────▼─────────┐                    │
+│                          │ Access decision  │                    │
+│                          │ + audit logging  │                    │
+│                          └────────┬─────────┘                    │
+│                                   │                              │
+│                    ┌──────────────▼───────────────┐              │
+│                    │ IndexedDB                     │              │
+│                    │ • students + embeddings       │              │
+│                    │ • access logs (offline queue) │              │
+│                    │ • settings                    │              │
+│                    └──────────────┬───────────────┘              │
+└───────────────────────────────────┼──────────────────────────────┘
+                                    │ HTTPS sync
+┌───────────────────────────────────┼──────────────────────────────┐
 │                   2. CLOUD LAYER (Supabase)                      │
 │                                                                  │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────┐  │
-│  │   PostgreSQL      │  │   Storage        │  │   Auth       │  │
-│  │   • students      │  │   (student-photos)│  │   (anon key) │  │
-│  │   • access_logs   │  │                  │  │              │  │
-│  │   • system_settings│  │                  │  │              │  │
-│  │   • course_uniforms│  │                  │  │              │  │
-│  └──────────────────┘  └──────────────────┘  └──────────────┘  │
-└────────────────────────────────────┼────────────────────────────┘
-                                     │
-┌────────────────────────────────────┼────────────────────────────┐
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────┐    │
+│  │ PostgreSQL       │  │ Storage          │  │ Auth         │    │
+│  │ • students       │  │ (student-photos) │  │ (anon key)   │    │
+│  │ • guests         │  │                  │  │              │    │
+│  │ • access_logs    │  │                  │  │              │    │
+│  │ • system_settings│  │                  │  │              │    │
+│  │ • daily_briefings│  │                  │  │              │    │
+│  └──────────────────┘  └──────────────────┘  └──────────────┘    │
+└───────────────────────────────────┼──────────────────────────────┘
+                                    │
+┌───────────────────────────────────┼──────────────────────────────┐
 │                   3. WEB LAYER (Vercel)                          │
 │                                                                  │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────┐  │
-│  │   Admin Dashboard │  │   Guard Station  │  │   Kiosk PWA   │  │
-│  │   (port 3000)     │  │   (port 3001)    │  │   (port 3002) │  │
-│  │                   │  │                  │  │              │  │
-│  │  • Supabase Auth  │  │  • 3-photo       │  │  • Face AI   │  │
-│  │  • Login page     │  │  • Camera enroll │  │  • Gate ctrl │  │
-│  │                   │  │  • Uniform assign│  │  • Offline    │  │
-│  └──────────────────┘  └──────────────────┘  └──────────────┘  │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────┐    │
+│  │ Admin dashboard  │  │ Guard station    │  │ Kiosk PWA    │    │
+│  │ (3000)           │  │ (3001)           │  │ (3002)       │    │
+│  │ • auth           │  │ • 5-angle enrol  │  │ • face AI    │    │
+│  │ • logs, health   │  │ • guest passes   │  │ • policy     │    │
+│  │ • AI briefing    │  │ • recent enrols  │  │ • gate ctrl  │    │
+│  └──────────────────┘  └──────────────────┘  └──────────────┘    │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 ## AI Pipeline (In-Browser)
 
-The AI pipeline runs entirely on the tablet's browser, leveraging WebGPU for acceleration:
-
 ```
-Every 3rd video frame (for performance)
+Every 3rd video frame
         │
         ▼
 ┌──────────────────────────────────────────────────────────┐
-│  1. FACE DETECTION (Main Thread)                        │
-│  ─────────────────────────────────────────────────────  │
-│  Library: MediaPipe Tasks Vision                        │
-│  Model: BlazeFace Short Range (float16)                 │
-│  Format: WASM (WebAssembly)                             │
-│  Speed: ~5ms per frame on Android tablet                │
-│  Output: Bounding boxes [x, y, w, h] normalized 0-1    │
+│ 1. FACE DETECTION (main thread)                          │
+│    MediaPipe Tasks Vision · BlazeFace short range (WASM)  │
+│    Output: bounding boxes, normalised 0-1                 │
 └────────────────────────┬─────────────────────────────────┘
-                         │
                          ▼
 ┌──────────────────────────────────────────────────────────┐
-│  2. FACE CROP + PREPROCESS (Main Thread)                 │
-│  ─────────────────────────────────────────────────────  │
-│  Crop face region from frame                             │
-│  Resize to 112×112 (ArcFace spec)                       │
-│  Output: RGB pixel data                                  │
+│ 2. CROP + PREPROCESS (main thread)                       │
+│    Crop face region → resize 112×112                      │
+│    Normalisation: (pixel - 127.5) / 127.5                 │
 └────────────────────────┬─────────────────────────────────┘
-                         │ Send to Web Worker
+                         │ postMessage
                          ▼
 ┌──────────────────────────────────────────────────────────┐
-│  3. FACE RECOGNITION (Web Worker - Separate Thread)      │
-│  ─────────────────────────────────────────────────────  │
-│  Engine: ONNX Runtime Web (v1.21.0)                     │
-│  Execution: WebGPU → WebGL → WASM (fallback chain)     │
-│  Model: ArcFace w600k_mbf (512-dim embeddings)          │
-│  Inference: ~30-50ms on WebGPU                          │
-│  Normalization: (pixel - 127.5) / 127.5                 │
-│  Output: 512-dim L2-normalized embedding                │
+│ 3. EMBEDDING (web worker)                                │
+│    ONNX Runtime Web · WebGPU → WebGL → WASM fallback      │
+│    ArcFace w600k_mbf → 512-dim, L2-normalised             │
 └────────────────────────┬─────────────────────────────────┘
-                         │
                          ▼
 ┌──────────────────────────────────────────────────────────┐
-│  4. FACE MATCHING (Main Thread)                          │
-│  ─────────────────────────────────────────────────────  │
-│  Cosine similarity against ALL enrolled embeddings      │
-│  (3 angles per student: front, left 45°, right 45°)     │
-│  Best score wins, threshold: 0.6                        │
-│  On match: retrieve student info + course + uniform     │
+│ 4. MATCH (main thread)                                   │
+│    Cosine similarity vs EVERY enrolled angle (5/student)  │
+│    Best score wins; floor 0.70                            │
 └────────────────────────┬─────────────────────────────────┘
-                         │
                          ▼
 ┌──────────────────────────────────────────────────────────┐
-│  5. UNIFORM DETECTION (Web Worker - Optional)            │
-│  ─────────────────────────────────────────────────────  │
-│  Engine: ONNX Runtime Web                                │
-│  Model: YOLO11n (custom-trained, ~6MB ONNX)             │
-│  Input: 640×640 body region                              │
-│  Post-processing: Non-Maximum Suppression (IoU 0.5)     │
-│  Check: detected class matches expected uniform type     │
-│  Fallback: color similarity check (no model loaded)     │
+│ 5. CONFIRMATION                                          │
+│    5 consecutive reads for the SAME identity (~2.5s)      │
+│    Winner must lead runner-up by 0.08                     │
+│    Otherwise: unknown face, no decision, no log           │
 └────────────────────────┬─────────────────────────────────┘
-                         │
                          ▼
 ┌──────────────────────────────────────────────────────────┐
-│  6. ACCESS DECISION                                      │
-│  ─────────────────────────────────────────────────────  │
-│  Face matched? + Uniform policy enabled?                 │
-│  Check uniform OK? → GRANTED (open gate)                │
-│  Face matched + Uniform FAIL → DENIED (log reason)      │
-│  Face unknown → Continue scanning                        │
-│  All decisions logged to IndexedDB                       │
-│  Logs synced to Supabase when online                     │
+│ 6. POLICY + DECISION                                     │
+│    lockdown_mode        → deny (LOCKDOWN_ACTIVE)          │
+│    guest pass expired   → deny (GUEST_EXPIRED)            │
+│    confirmed face       → grant (POLICY_PASS /            │
+│                            GUEST_PASS_VALID)              │
+│    Gate command → wait for S:OPEN → log open/unconfirmed  │
+│    Row (reason_code + decision_note) → IndexedDB         │
 └──────────────────────────────────────────────────────────┘
 ```
 
+### Why confirmation exists
+
+One hot frame is not a verdict. Field observation showed motion-blurred frames
+scoring ~0.61 for the wrong student, so a single-frame match could grant access
+to a lookalike. The confirmation gate requires the same identity to win five
+consecutive ticks and to stand clear of the runner-up; the real student confirms
+in about 2.5 seconds of holding still, while a stranger flickering between
+identities never does.
+
 ## Web Worker Architecture
 
-A single shared Web Worker handles all ONNX inference to save memory:
+A single shared Web Worker handles all ONNX inference, so the camera preview
+never stalls and only one runtime is loaded.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    MAIN THREAD                               │
 │                                                             │
-│  face.ts ←─── sendToWorker("get_embedding", data) ───┐     │
-│  uniform.ts ←── sendToWorker("yolo_infer", data) ────┤     │
-│                                                      │     │
-│  workerManager.ts ─── worker.postMessage(msg) ───────┤     │
-└──────────────────────────────────────────────────────┼─────┘
-                                                       │
-┌──────────────────────────────────────────────────────┼─────┐
-│                 WEB WORKER THREAD                     │     │
-│                                                      ▼     │
-│  inference.worker.ts ─── onmessage ─→ switch(type)        │
+│  face.ts ──sendToWorker("get_embedding", data)──►           │
+│  workerManager.ts ─── worker.postMessage(msg) ───►          │
+└──────────────────────────────────────┬──────────────────────┘
+                                       │
+┌──────────────────────────────────────┼──────────────────────┐
+│                 WEB WORKER THREAD    ▼                      │
 │                                                             │
-│  Sessions (loaded once, reused):                            │
-│  ┌─────────────────────┐  ┌──────────────────────┐        │
-│  │ faceSession         │  │ yoloSession          │        │
-│  │ ArcFace w600k_mbf   │  │ YOLO11n (custom)     │        │
-│  │ 512-dim embeddings  │  │ Object detection     │        │
-│  │ Execution: WebGPU   │  │ Execution: WebGPU    │        │
-│  └─────────────────────┘  └──────────────────────┘        │
+│  inference.worker.ts ── onmessage ──► switch(type)          │
 │                                                             │
-│  Both sessions use the same ONNX Runtime Web WASM binary    │
-│  (loaded once from CDN, cached by browser)                 │
+│  Session (loaded once, reused):                             │
+│  ┌─────────────────────┐                                    │
+│  │ faceSession         │  ArcFace w600k_mbf                │
+│  │ 512-dim embeddings  │  Execution: WebGPU                │
+│  └─────────────────────┘                                    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ## Data Flow
 
-### Student Enrollment Flow
+### Student / Guest Enrolment
 
 ```
-Guard opens Guard Station (port 3001)
+Guard opens Guard Station (3001)
         │
         ▼
-1. Fill student info (name, ID, course, year, section)
+1. Fill details (name, ID, course, year, section) or guest (host, valid_until)
         │
         ▼
-2. Capture 3 photos (Front, Left 45°, Right 45°)
+2. Capture 5 photos (front, left 45°, right 45°, and two more angles)
         │
         ▼
-3. Submit → Supabase Storage (3 JPEG files)
+3. Upload 5 JPEGs to Supabase Storage (bucket: student-photos)
         │
         ▼
-4. Student record created in Supabase (photo_urls = JSON array)
+4. Record created in Supabase (photo_url = JSON array)
         │
         ▼
-5. Kiosk syncs → downloads student records
+5. Kiosk sync downloads the record
         │
         ▼
-6. Kiosk processes each photo → generates 3 ArcFace embeddings
+6. Kiosk generates one ArcFace embedding per photo
         │
         ▼
-7. Student ready for recognition ✓
+7. Student or guest ready for recognition
 ```
 
 ### Access Grant Flow
 
 ```
-Student approaches kiosk camera
+Person approaches the kiosk camera
         │
         ▼
-1. Camera captures frame (every 3rd frame ≈ 10 FPS)
+1. Frame captured (every 3rd frame)
         │
         ▼
-2. MediaPipe detects face bounding box
+2. MediaPipe detects the face
         │
         ▼
-3. Face cropped → resized to 112×112 → sent to Web Worker
+3. Crop → 112×112 → Web Worker → 512-dim embedding
         │
         ▼
-4. Web Worker runs ArcFace → returns 512-dim embedding
+4. Cosine similarity against all enrolled embeddings
         │
         ▼
-5. Compare against all enrolled embeddings (cosine similarity)
-        │
-        ▼
-6. Identity known? → Check uniform policy
-   Identity unknown? → Continue scanning
-        │
-        ▼
-7. Uniform check: YOLO11n detects uniform type
-        │
-        ▼
-8. Decision:
-   ✅ Face match + Uniform OK → Open gate + log
-   ❌ Face match + Uniform FAIL → Deny + log reason
-   ❌ No match → Continue scanning
+5. Confirmation: 5 matching reads + 0.08 margin?
+        │                                   │
+       no                                 yes
+        │                                   │
+        ▼                                   ▼
+  unknown face (soft beep),        6. Policy check
+  no decision, no log                 lockdown → deny
+                                      guest expired → deny
+                                      otherwise → grant
+                                            │
+                                            ▼
+                                 7. Gate command → S:OPEN
+                                    log with reason_code
 ```
 
 ### Sync Flow (IndexedDB ↔ Supabase)
 
 ```
-Background Sync (triggered on init + online event)
+Background sync (on init + online event)
         │
         ▼
-1. Check Supabase connectivity
-        │
+1. Check connectivity
         ▼
-2. Download students & settings (parallel)
-        │
+2. Download students, guests, settings (parallel)
         ▼
-3. Download students → store in IndexedDB
-        │
+3. Store in IndexedDB; generate embeddings for new photos
         ▼
-4. Process new student photos → generate embeddings
-        │
+4. Upload unsynced access logs (batches of 50, sync_id idempotent)
         ▼
-5. Upload unsynced access logs (batches of 50)
-        │
+5. Mark uploaded logs as synced
         ▼
-6. Mark uploaded logs as synced
-        │
-        ▼
-7. Reload enrolled faces from IndexedDB
+6. Reload enrolled faces from IndexedDB
 ```
 
-## Hardware Layer
+## Gate Control
 
 ```
-┌────────────────────────────────────────────────────────────┐
-│  Arduino Smart Gate Controller                              │
-│                                                             │
-│  USB-OTG ←→ Tablet (Web Serial API)                        │
-│                                                             │
-│  State Machine:                                             │
-│  ┌─────────┐    ┌─────────┐    ┌─────────┐                │
-│  │  IDLE   │───►│ ACTIVE  │───►│  OPEN   │                │
-│  │         │    │         │    │         │                │
-│  │ Wait for│    │ Button  │    │ Servo   │                │
-│  │ command │◄───│ pressed │◄───│ rotated │                │
-│  └─────────┘    └─────────┘    └─────────┘                │
-│                                                             │
-│  Serial Protocol:                                           │
-│  PC → Arduino: 'O' = open gate                              │
-│  PC → Arduino: 'C' = close gate                             │
-│  Arduino → PC: 'B' = button press event                     │
-│  Arduino → PC: 'R' = ready signal                           │
-│  Arduino → PC: 'K' = command acknowledge                    │
-└─────────────────────────────────────────────────────────────┘
+Kiosk ──► ESP32 (SoftAP SmartGate-Gate1, ws://192.168.4.1:81)
+      ──► Arduino Uno over USB serial (fallback)
 ```
+
+| Direction | Message | Meaning |
+|-----------|---------|---------|
+| Browser → gate | `O` | Open |
+| Browser → gate | `C` | Close |
+| Browser → gate | `S` | Status query |
+| Gate → browser | `R` | Ready |
+| Gate → browser | `K` | Acknowledged |
+| Gate → browser | `B` | Physical button pressed |
+| Gate → browser | `S:IDLE` / `S:OPENING` / `S:OPEN` / `S:CLOSING` / `S:ERROR` | State report |
+
+The kiosk does not trust an open command. It waits for `S:OPEN` and reports one
+of three outcomes:
+
+- **OPEN** — the controller confirmed the barrier released (`gate_state: open`)
+- **AWAITING** — a controller is linked but has not confirmed (`unconfirmed`)
+- **SENT** — no controller linked, demo mode (`simulated`)
+
+Reporting a silent command as success made an unwired gate look like a working
+one; the three-state model removes that ambiguity from the UI and the log.
 
 ## Security Model
 
 | Layer | Measure |
 |-------|---------|
 | **Supabase** | Row Level Security (RLS) policies per table |
-| **Supabase Auth** | Anon key with RLS for data isolation |
-| **CORS** | Vercel handles cross-origin requests |
-| **Offline** | IndexedDB scoped to browser origin |
-| **Web Serial** | User must click to pair with Arduino |
-| **Camera** | Browser permission prompt |
+| **Supabase Auth** | Staff sessions for Guard and Dashboard writes |
+| **Decision policy** | Lockdown and guest expiry evaluated before any grant |
+| **Offline** | IndexedDB scoped to the browser origin |
+| **Gate** | Local hotspot with WPA2; no internet exposure |
+| **Camera** | Browser permission prompt, unlocked by Tap-to-Start |
 | **Service Worker** | HTTPS-only registration |
+| **AI key** | `GEMINI_API_KEY` is server-side only (dashboard route) |
 
 ## Performance Targets
 
 | Metric | Target | Actual |
 |--------|--------|--------|
-| Face detection | < 10ms | ~5ms (MediaPipe WASM) |
-| Face recognition | < 100ms | ~30-50ms (WebGPU) |
-| YOLO inference | < 200ms | ~50-100ms (WebGPU) |
-| Full pipeline | < 500ms | ~200-300ms |
-| Camera FPS | 30 | Limited to every 3rd frame |
+| Face detection | < 10 ms | ~5 ms (MediaPipe WASM) |
+| Face recognition | < 100 ms | ~30–50 ms (WebGPU) |
+| Full pipeline | < 500 ms | ~200–300 ms |
+| Camera FPS | 30 | every 3rd frame is processed |
 | Embedding dim | 512 | 512 (ArcFace) |
-| Match accuracy | > 95% | ~99.4% LFW (ArcFace) |
-| Cold start | < 10s | ~3-5s (model download) |
+| Confirmation | ~2.5 s | 5 consecutive reads |
+| Cold start | < 10 s | ~3–5 s (model download, then cached) |
 
 ## Dependencies
 
@@ -326,46 +303,13 @@ dashboard ─┬─ @supabase/supabase-js  Cloud operations
 ## CI/CD Pipeline
 
 ```
-Push/PR to main/develop
-        │
-        ▼
-┌─── CI WORKFLOW ──────────────────────────────────┐
-│                                                   │
-│  1. Lint + Format (1 job)                        │
-│     ├─ Prettier check (blocking)                 │
-│     └─ ESLint (informational)                    │
-│                                                   │
-│  2. TypeScript Check (3 parallel jobs)            │
-│     ├─ Dashboard tsc --noEmit                    │
-│     ├─ Guard tsc --noEmit                        │
-│     └─ Kiosk tsc --noEmit                        │
-│                                                   │
-│  3. Build (3 parallel jobs)                       │
-│     ├─ pnpm --filter dashboard build             │
-│     ├─ pnpm --filter guard build                 │
-│     └─ pnpm --filter kiosk build                 │
-│                                                   │
-│  4. Unit Tests                                    │
-│     └─ vitest run (60 tests)                     │
-│                                                   │
-│  5. CI Summary (PR comment table)                │
-└───────────────────────────────────────────────────┘
-        │ Push to main
-        ▼
-┌─── DEPLOY WORKFLOW ─────────────────────────────┐
-│                                                   │
-│  1. Check (TypeScript + Build + Test)            │
-│                                                   │
-│  2. Deploy to Vercel (matrix: 3 services)        │
-│     ├─ dashboard.smart-gate.vercel.app           │
-│     ├─ guard.smart-gate.vercel.app               │
-│     └─ kiosk.smart-gate.vercel.app               │
-└───────────────────────────────────────────────────┘
-        │ Weekly
-        ▼
-┌─── CODEQL WORKFLOW ────────────────────────────┐
-│  • Security vulnerability scan                  │
-│  • security-and-quality queries                 │
-│  • JavaScript/TypeScript analysis               │
-└──────────────────────────────────────────────────┘
+Push/PR
+   │
+   ▼
+1. Prettier check (blocking) + ESLint (informational)
+2. TypeScript check — dashboard, guard, kiosk (3 parallel jobs)
+3. Build — dashboard, guard, kiosk (3 parallel jobs)
+4. Unit tests — vitest, 83 tests
+5. Deploy (gated) — 3 Vercel projects
+   Weekly: CodeQL security scan
 ```

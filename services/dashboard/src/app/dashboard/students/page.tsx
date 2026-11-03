@@ -839,7 +839,7 @@ export default function StudentsPage() {
                       <th className="table-header">ID</th>
                       <th className="table-header">Course</th>
                       <th className="table-header">Year · Section</th>
-                      <th className="table-header">Course</th>
+                      <th className="table-header">Uniform</th>
                       <th className="table-header">Status</th>
                       <th className="table-header">Enrolled</th>
                       <th className="table-header">Actions</th>
@@ -1169,7 +1169,7 @@ export default function StudentsPage() {
                   },
                   {
                     icon: <Palette className="w-4 h-4" />,
-                    label: "Course",
+                    label: "Uniform",
                     value: formatUniformLabel(viewing.uniform_type),
                   },
                   {

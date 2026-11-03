@@ -1,53 +1,98 @@
 # Chapter IV — Results and Discussion (ready-to-paste draft)
 
-> Source numbers: `yolo val` on the held-out test split (97 images, 106
-> instances), Oct 2026. Curves and confusion matrices: `runs/detect/train/`
-> (`BoxP_curve.png`, `BoxR_curve.png`, `BoxF1_curve.png`, `BoxPR_curve.png`,
-> `confusion_matrix.png`, `confusion_matrix_normalized.png`).
+> Scope note: this chapter reports what the deployed prototype actually
+> measures. Numbers that were never measured against the enrolled population
+> are named as open work rather than quoted as results.
 
-## 4.1 Uniform Detection Performance
+## 4.1 What Was Verified, and How
 
-The trained YOLO11n model (9 classes, 640×640) achieved **mAP50 = 0.738**
-(precision 0.680, recall 0.738) on the held-out test set. Five classes exceed
-0.77 mAP50 (`education_female` 0.995, `coag_female` 0.876, `coag_male` 0.823,
-`education_male` 0.823, `cici_male` 0.774). Three classes underperform:
-`cbmsd_chef_male` (0.436), `cici_female` (0.419), and `cbmsd_universal_male`
-(0.505). (`cici_blazer` scores 0.995 but has only 2 test instances and cannot
-support a claim.)
+Three kinds of evidence support the claims made for this system:
 
-## 4.2 Analysis of Weak Classes
+1. **Unit tests** — 83 assertions over the pure logic that decides access:
+   cosine matching, the confirmation gate, the re-arm state machine, gate
+   message parsing, heartbeat row shaping, and audio throttling. `vitest run`
+   in `services/kiosk` passes 83/83.
+2. **Offline rehearsal** — the tablet was put in airplane mode and driven
+   through a full visit: detection, recognition, decision, gate command and
+   queued logging all complete with the network down. Only the sync half of the
+   log write waits for connectivity.
+3. **Physical cycling** — the servo arm was driven through open/close cycles
+   from the kiosk, with the firmware's `S:OPEN` state report used to confirm the
+   barrier actually released before the screen claims it did.
 
-The weak classes are the least represented in training: 47, 52, and 43 label
-instances respectively, against 256 for `education_male` — the training
-signal differs by up to 23× (`cici_blazer`: 11 instances). The validation
-curve peaked at epoch 38 (mAP50 0.693) and decayed to 0.643 by epoch 100,
-indicating mild overfitting. The prescribed remedy is data-first: 50–100
-additional images per weak class with session-separated splits, plus early
-stopping — not a larger model.
+## 4.2 Face Matching Posture
 
-## 4.3 Operating-Point Selection
+Identity uses MediaPipe BlazeFace detection with ArcFace (`w600k_mbf`, 512-dim)
+embeddings, compared by cosine similarity against every enrolled angle.
 
-A confidence-threshold sweep on the test set gave: 0.25 → P 0.723 / R 0.754;
-0.35 → P 0.728 / R 0.698; 0.45 → P 0.680 / R 0.738; 0.55 → P 0.760 / R 0.565.
-The deployed operating point (0.45) is retained, and detections in the
-0.25–0.40 band with the correct course are reported to the student as an
-unclear read ("hold still") rather than a wrong-uniform denial, since 0.55
-collapses recall to 0.565 while 0.25 preserves both metrics.
+The deployed configuration applies three independent conditions before a match
+may become a decision:
 
-## 4.4 Deployment Fidelity
+| Condition | Value | Purpose |
+|-----------|-------|---------|
+| Similarity floor | **0.70** | The winning template must clear the floor |
+| Confirmation | **5 consecutive reads** (≈2.5 s) | A single motion-blurred frame can never grant |
+| Margin over runner-up | **0.08** | Two lookalikes (0.71 vs 0.70) stay undecided |
 
-The deployed browser model (`uniform_yolo11n.onnx`) is bit-identical to the
-trained weights (MD5 verified). A parity test feeding one image per class
-through the kiosk-equivalent pipeline (letterbox, RGB/255, conf 0.45,
-class-aware NMS) produced 9/9 identical classes and confidences versus
-PyTorch inference — the in-browser pipeline introduces no accuracy loss.
+The floor was raised from 0.65 after field observation showed strangers
+matching enrolled students on isolated blurred frames. Below every condition
+the outcome is an unknown face — never a wrong name.
 
-## 4.5 Face Verification Posture
+**What is not claimed.** The 99.4% figure often quoted for ArcFace is the
+model's published LFW benchmark, not this system's measured false-accept rate.
+No target-FMR sweep has been run against the enrolled population, so this
+prototype cannot state a false-accept rate for the school's own students.
 
-Identity uses MediaPipe BlazeFace short-range detection with ArcFace
-(w600k_mbf, 512-dim) embeddings matched by cosine similarity against
-three-angle enrollment templates. The 0.6 default threshold was not tuned on
-the enrolled population and must be calibrated (target-FMR sweep procedure in
-the research note) before claiming a false-accept rate. Presentation-attack
-detection is out of scope for this prototype; photo-print and screen-replay
-attacks are acknowledged threats mitigated procedurally by guard review.
+## 4.3 Decision Integrity
+
+Early field use produced one student with 140 access rows from a single stay:
+recognition kept running after the verdict and re-decided whoever remained in
+frame. The fix is a small, fully unit-tested state machine:
+
+- the scanner re-arms only after the gate area has been **empty for 1.5 s**;
+- a repeat decision inside **60 s** is displayed but writes no second row;
+- a low similarity reading counts as "unrecognised" only after it persists for
+  **2.5 s**, because a walking-up frame measurably reads low (≈0.26 before
+  settling near 0.63);
+- one person therefore produces exactly one row per visit.
+
+Gate reporting was corrected in the same spirit. A command sent with no
+controller linked is not an open barrier, so the kiosk reports one of three
+states — **OPEN** (controller confirmed), **AWAITING** (linked, not yet
+confirmed), **SENT** (no controller, demo mode) — and logs `open`,
+`unconfirmed` or `simulated` accordingly.
+
+## 4.4 Policy Layer
+
+Access is decided by face match *plus* a policy that can change without
+releasing new code:
+
+| Outcome | Reason code | Behaviour |
+|---------|-------------|-----------|
+| Student match | `POLICY_PASS` | Granted |
+| Guest within validity | `GUEST_PASS_VALID` | Granted |
+| Guest past `valid_until` | `GUEST_EXPIRED` | Denied, guard told to renew |
+| Campus lockdown | `LOCKDOWN_ACTIVE` | Denied for everyone; guard override remains |
+
+Each row stores `reason_code` and a human-readable `decision_note`, so a denial
+can be explained to the person at the gate and audited later.
+
+## 4.5 Deployment Fidelity
+
+The kiosk runs the same recognition path in the browser as the desktop
+reference: 112×112 crop, `(pixel − 127.5) / 127.5` normalisation, L2-normalised
+embedding, cosine comparison. The heavy model runs in a shared Web Worker, so
+frame delivery is not blocked by inference.
+
+## 4.6 Limitations of This Evaluation
+
+- No false-accept/false-reject rate measured on the enrolled population.
+- No presentation-attack (photo/screen replay) testing.
+- Throughput at a real morning rush was not measured; the prototype was tested
+  with small cohorts.
+- Fairness across skin tones and lighting conditions was not evaluated.
+- One gate, one kiosk. Multi-gate coordination is untested.
+
+The remedy for each is measurement first: calibrate the threshold to a target
+false-match rate, add liveness before claiming security, and load-test a real
+arrival peak before wider deployment.

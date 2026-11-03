@@ -1,5 +1,7 @@
 "use client";
 
+import { evaluateGuestPass } from "@/lib/accessPolicy";
+
 import { useEffect, useRef, useState } from "react";
 import {
   initFaceDetector,
@@ -1118,13 +1120,9 @@ if (!identityConfirmed(confirmRef.current, margin)) {
     let guestExpiryLabel = '';
     if (isGuestMatch) {
       const raw = (match.person as { valid_until?: string | null })?.valid_until;
-      if (raw) {
-        const t = Date.parse(raw);
-        if (!Number.isNaN(t) && Date.now() > t) {
-          guestExpired = true;
-          guestExpiryLabel = new Date(t).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-        }
-      }
+      const pass = evaluateGuestPass(raw, Date.now());
+      guestExpired = pass.expired;
+      guestExpiryLabel = pass.expiryLabel;
     }
     const denyReason = !match.matched
       ? null

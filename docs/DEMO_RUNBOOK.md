@@ -1,4 +1,4 @@
-# 🎓 Defense-Day Demo Runbook (September 2026)
+# 🎓 Defense-Day Demo Runbook
 
 One page. Follow this order and the live demo cannot fail.
 
@@ -9,21 +9,18 @@ One page. Follow this order and the live demo cannot fail.
 | # | Task | Where | Status |
 |---|------|-------|--------|
 | 1 | Fill real Supabase credentials in all 3 `.env.local` files | `services/{kiosk,guard,dashboard}/.env.local` | ☐ |
-| 2 | Run `database/migrations/005_align_uniforms_to_model.sql` in Supabase SQL Editor | Supabase → SQL Editor | ☐ |
-| 3 | Run `database/migrations/006_compatibility_security.sql` in Supabase SQL Editor | Supabase → SQL Editor | ☐ |
-| 4 | Run `database/migrations/007_gate_health.sql` in Supabase SQL Editor (gate feedback + kiosk health table) | Supabase → SQL Editor | ☐ |
-| 5 | Run `database/migrations/008_guard_storage_policies.sql` in Supabase SQL Editor (Guard photo upload — enrollment fails without it) | Supabase → SQL Editor | ☐ |
-| 6 | Run `database/migrations/009_school_branding.sql` in Supabase SQL Editor (initials badge + voice setting) | Supabase → SQL Editor | ☐ |
-| 7 | Verify with one paste: run `database/verify.sql` → every row PASS (uniform classes 0..8, unique `sync_id` index, RLS + Storage policies) | Supabase SQL Editor | ☐ |
-| 8 | Flash `hardware/esp32/smart_gate_esp32.ino` to the ESP32 (Arduino IDE + WebSockets library) | Arduino IDE | ☐ |
-| 9 | Enroll **3 demo students** (2 correct uniforms, 1 wrong uniform for the "denied" demo), then run `pnpm preflight` → no blocking issues | Guard Station `:3001` | ☐ |
-| 10 | On the tablet: open kiosk **once while online** → let models load (~5 s) → tap sync → wait for "Profiles" count = enrolled students | Kiosk `:3002` | ☐ |
-| 11 | **Airplane-mode test**: turn off all network → reload kiosk → face recognition + uniform detection must still work, gate must open, logs must queue | Tablet | ☐ |
-| 12 | Reconnect network → logs auto-sync, heartbeat row appears in Dashboard → Kiosk Health | Tablet + Dashboard `:3000` | ☐ |
-| 13 | `pnpm build` green on laptop (backup demo machine) | Terminal | ☐ |
+| 2 | Run `database/schema.sql`, then any migrations you have not applied yet (`006` → `017`) | Supabase → SQL Editor | ☐ |
+| 3 | Verify with one paste: run `database/verify.sql` → every row PASS | Supabase SQL Editor | ☐ |
+| 4 | Flash `hardware/esp32/smart_gate_esp32.ino` to the ESP32 (Arduino IDE + WebSockets library) | Arduino IDE | ☐ |
+| 5 | Enrol **3 demo students** (5 angles each) and **1 guest with a pass expiring in 2 minutes** | Guard Station `:3001` | ☐ |
+| 6 | On the tablet: open the kiosk **once while online** → let the models load (~5 s) → sync → "Profiles" count = enrolled students | Kiosk `:3002` | ☐ |
+| 7 | **Airplane-mode test**: network off → reload kiosk → recognition, decision and gate command must all still work, logs queue | Tablet | ☐ |
+| 8 | Reconnect → logs auto-sync, heartbeat row appears in Dashboard → Kiosk Health | Tablet + Dashboard `:3000` | ☐ |
+| 9 | Set `GEMINI_API_KEY` in the dashboard if you want the AI briefing live | Dashboard `.env.local` | ☐ |
+| 10 | `pnpm build` green on the laptop (backup demo machine) | Terminal | ☐ |
 
-> ⚠️ The tablet must be **loaded online once** (step 10) so the service worker caches
-> the face models + student photos. After that, everything runs offline.
+> ⚠️ The tablet must be **loaded online once** (step 6) so the service worker
+> caches the face model and student photos. After that, everything runs offline.
 
 ---
 
@@ -31,53 +28,64 @@ One page. Follow this order and the live demo cannot fail.
 
 1. **Power the ESP32 first** (phone charger) — wait for 3 LED blinks. No ESP32? Plug the Arduino in via USB-OTG instead.
 2. On the tablet, join Wi-Fi **`SmartGate-Gate1`** (password `smartgate123`) — *or* skip this if using the Arduino USB fallback.
-3. Open the kiosk on the tablet → **Tap to Start** (this grants camera + unlocks audio in one tap) → status pill shows **Gate: IDLE** (Wi-Fi icon).
-   - USB fallback: tap the gear (top-right) → Operator Panel → **Bind Gate** → select the Arduino in the serial prompt.
-4. **Put the tablet in airplane mode** and say: *"Face recognition, uniform detection, AND gate control run 100% on-device — no internet, no school Wi-Fi needed."* (This is your strongest feature — show it.)
-5. Demo student A → **face matched + uniform OK → gate opens** (green "ACCESS GRANTED — Gate OPEN" + chime + *"Welcome to ISUFST"* voice line).
-6. Demo student B wearing the **wrong uniform** → **denied** (red "ACCESS DENIED" + buzz + voice: "Please see the guard").
-7. Press the **physical button** → manual override gate open (guard fallback).
-8. Reconnect network → show the sync panel: logs that queued offline are now synced ("Synced: 0 students, N logs").
-9. Optional wow: open Dashboard → **Kiosk Health** → your kiosk shows ONLINE with camera OK, gate linked, live gate state.
+3. Open the kiosk → **Tap to Start** (grants camera + unlocks audio in one tap) → status pill shows **Gate: IDLE**.
+   - USB fallback: gear (top-right) → Operator Panel → **Bind Gate** → pick the Arduino.
+4. **Put the tablet in airplane mode** and say: *"Detection, recognition, the access decision and the gate command all run on this tablet. No internet, no school Wi-Fi."* (This is your strongest feature — show it.)
+
+## 🎞️ The Four-Minute Demo
+
+| # | Do this | What they see |
+|---|---------|---------------|
+| 1 | Student A steps up and holds still ~2 s | Confirmation builds, then **ACCESS GRANTED** + chime + "Welcome to ISUFST", gate physically opens |
+| 2 | Student A stands still another 10 s | **Nothing is logged again** — one person, one row (this is the point of slide 9) |
+| 3 | Student A leaves; guest with the expiring pass steps up | Granted while valid — `GUEST_PASS_VALID` |
+| 4 | Wait for the pass to expire, guest steps up again | **Denied** — "pass expired, see guard", `GUEST_EXPIRED` |
+| 5 | Dashboard → Settings → turn **lockdown** on, student steps up | **Denied** — `LOCKDOWN_ACTIVE`, reason shown on screen |
+| 6 | Turn lockdown off, press the **physical button** | Arm opens — staff override still works |
+| 7 | Reconnect network → sync panel | Queued logs from airplane mode sync now |
+| 8 | Dashboard → Access Logs | Rows show who, when, and **why** — permission and denial both explained |
 
 ## 🗣️ What to say (30-second script)
 
-> "This is a smart gate kiosk. Everything runs in the browser — face detection, ArcFace face
-> recognition at 99.4% LFW accuracy, and a custom-trained YOLO11 model that checks the student's
-> uniform against their course. It's offline-first: all AI models and student data live on the
-> tablet, and access logs queue locally and sync to Supabase when a connection is available.
-> The ESP32 controls the physical gate over Wi-Fi — its own hotspot, no internet needed."
+> "This is a smart gate kiosk. Everything runs in the browser — face detection
+> and ArcFace recognition at 512 dimensions, a confirmation step that needs five
+> matching reads before it will trust a face, and a policy layer for guest
+> passes and lockdown. It's offline-first: the models and student data live on
+> the tablet, and decisions queue locally and sync to Supabase when a connection
+> returns. The ESP32 moves the arm over its own hotspot, and the kiosk waits for
+> the controller to confirm the barrier opened before it says so."
 
 ## 🔥 If Something Goes Wrong
 
 | Symptom | Fix |
 |---------|-----|
-| "System Fault" / camera error | Tap **Reboot Terminal** (top of error screen) → re-grant camera |
-| Gate won't connect / status pill stuck on "Connect Gate" | Tablet not on `SmartGate-Gate1` Wi-Fi, or ESP32 unpowered → check LED blinks, rejoin hotspot, tap Connect Gate |
-| No sound on grant/deny | Voice was toggled off → gear icon → Operator Panel → **Voice ON**. If still silent: reboot the tablet and do the Tap-to-Start again (audio needs one tap after every boot) |
-| Need to see FPS/sync/models during demo | Tap the **gear icon** (top-right) → Operator Panel shows everything; tap gear again to hide before the committee looks at the screen |
-| No profiles / "Awaiting Subject" forever | Sync panel → Force Sync → wait for Profiles count to update. If sync reports an access-log column error, run migration `006_compatibility_security.sql`. |
-| Guard enrollment fails: "new row violates row-level security policy" | Run migration `008_guard_storage_policies.sql` (Storage policies on `student-photos`). |
-| Wrong service says a table/column is missing | Run `database/verify.sql` in the SQL Editor — it names the exact migration to re-run. |
-| Uniform check says "Uniform detector not loaded" | Model failed to load once online — reload the kiosk while online, verify `200` on `/models/uniform_yolo11n.onnx` |
+| "System Fault" / camera error | Tap **Reboot Terminal** → re-grant camera |
+| Gate won't connect / pill stuck on "Connect Gate" | Tablet not on `SmartGate-Gate1`, or ESP32 unpowered → check LED blinks, rejoin hotspot |
+| No sound on grant/deny | Gear → Operator Panel → **Voice ON**. Still silent: reboot tablet and do Tap-to-Start again (audio needs one tap after boot) |
+| Subject never recognised | Hold still for the full ~2.5 s confirmation; check lighting; confirm the student is enrolled with 5 angles. If a *stranger* is being matched, raise `face_recognition_threshold` in Settings — but re-test first |
+| Two lookalikes keep failing | That is the 0.08 margin working. Enrol clearer angles rather than lowering it |
+| Guest denied unexpectedly | Check `valid_until` — the kiosk denies on the server clock |
+| Everyone denied at once | Lockdown is on. Settings → `lockdown_mode = false` |
+| No profiles / "Awaiting Subject" forever | Sync panel → Force Sync → wait for Profiles count. If an access-log column error appears, run migration `006` |
+| Guard enrollment fails: "row-level security policy" | Run migration `008` (Storage policies on `student-photos`) |
+| Wrong table/column error | Run `database/verify.sql` — it names the migration to re-run |
+| AI briefing missing | `GEMINI_API_KEY` not set, or the day's briefing was never generated → Dashboard → regenerate once |
 | Arduino won't connect | Tap "Connect Hardware", pick the port; check USB-OTG cable + Arduino powered |
-| Face match wrong person | Raise the threshold in Supabase `system_settings` (`face_recognition_threshold`, default 0.65) — but re-test first |
-| No internet at venue and models never cached | Can't happen if step 5 was done — that's the point of the airplane-mode rehearsal |
+| No internet at venue and models never cached | Can't happen if step 6 was done — that's the point of the airplane-mode rehearsal |
 
 ## 🛠️ Quick Commands
 
 ```bash
 pnpm dev          # all 3 services (dashboard :3000, guard :3001, kiosk :3002)
 pnpm typecheck    # TS check, all services
-cd services/kiosk && npx vitest run   # 60 unit tests
+cd services/kiosk && npx vitest run   # 83 unit tests
 pnpm build        # production build, all services
 pnpm preflight    # audit the live database before the demo
 ```
 
 ## 🎯 Reminders
 
-- Demo students' `uniform_type` must be one of the **9 real class names**
-  (`cbmsd_*`, `cici_*`, `coag_*`, `education_*`) — migration 005 sets the dropdowns.
-- Uniform model is local (`public/models/uniform_yolo11n.onnx`, 10.6 MB) — fully offline.
 - Face models load from CDN **once**, then the service worker caches them.
-- Keep 3 photos per student (front, left, right) — recognition accuracy depends on it.
+- Enrol **5 photos** per student — recognition accuracy depends on the angles.
+- A guest pass is only as good as its `valid_until`; set the demo one 2 minutes out.
+- The public screen never shows names or scores. If the panel wants detail, open the Dashboard.

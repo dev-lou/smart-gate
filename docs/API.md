@@ -39,8 +39,7 @@ const { error } = await supabase
     name: "Juan Dela Cruz",
     student_id: "2024-001",
     department: "BSIT",
-    uniform_type: "cici_male_uniform",
-    photo_url: JSON.stringify(["url1.jpg", "url2.jpg", "url3.jpg"]),
+    photo_url: JSON.stringify(["front.jpg", "left.jpg", "right.jpg", "angle4.jpg", "angle5.jpg"]),
     is_active: true,
   });
 ```
@@ -72,7 +71,7 @@ const { data } = await supabase
 // Update a setting
 const { error } = await supabase
   .from("system_settings")
-  .upsert({ key: "uniform_detection_enabled", value: "true" });
+  .upsert({ key: "lockdown_mode", value: "false" });
 ```
 
 #### Storage (Photos)
@@ -182,7 +181,6 @@ The kiosk PWA uses a Service Worker to cache AI models for offline use.
 |----------|------|--------|
 | MediaPipe WASM runtime | ~4 MB | `cdn.jsdelivr.net/npm/@mediapipe/tasks-vision` |
 | ArcFace model (w600k_mbf.onnx) | ~6 MB | `huggingface.co/WePrompt/buffalo_sc` |
-| YOLO11n model (when available) | ~6 MB | Configurable URL |
 
 ### Cache Strategy
 
@@ -215,14 +213,20 @@ matchFace(embedding, enrolledFaces): MatchResult
   → Cosine similarity against all enrolled → { matched, person, confidence }
 ```
 
-### Uniform Module (`lib/uniform.ts`)
+### Scan Policy Module (`lib/scanPolicy.ts`)
 
 ```typescript
-initUniformDetector(): Promise<boolean>
-  → Downloads YOLO11n ONNX → creates inference session
+confirmIdentity(prev, personId, matched): ConfirmState
+  → Tracks consecutive matching reads for the identity currently in frame
 
-checkUniform(video, faceBbox, expectedUniform, canvas): UniformCheckResult
-  → YOLO inference (or fail-closed denial if no model is loaded) → { ok, confidence, detail }
+identityConfirmed(state, margin): boolean
+  → True only after 5 consecutive reads (~2.5s) AND a 0.08 margin over the runner-up
+
+nextPresence({ facePresent, state, now }): PresenceState
+  → Re-arms the scanner only after the gate area has been empty for 1.5s
+
+shouldDecide({ lastDecisionAt, frameEmptySinceLastDecision, now }): boolean
+  → One decision per stay; a repeat inside 60s writes no second log row
 ```
 
 ### Database Module (`lib/db.ts`)
@@ -287,10 +291,10 @@ stopHeartbeat(): void
 The Guard Station does **not** have a backend API. It uses Supabase directly:
 
 ```
-Guard fills form + captures 3 photos
+Guard fills form + captures 5 photos
         │
         ▼
-1. Upload 3 JPEG files to Supabase Storage (bucket: student-photos)
+1. Upload 5 JPEG files to Supabase Storage (bucket: student-photos)
         │
         ▼
 2. Get public URLs for each photo
@@ -312,7 +316,7 @@ Database: "smart-gate-kiosk" (Version 1)
 ObjectStore: "students"
   Key: id (UUID)
   Data: {
-    id, name, student_id, department, uniform_type,
+    id, name, student_id, department,
     photo_url, embeddings: Float32Array[],
     is_active, updated_at
   }
@@ -322,7 +326,7 @@ ObjectStore: "logs"
   Index: "synced" (0 = unsynced, 1 = synced)
   Data: {
     person_id, person_name, direction, method,
-    success, confidence, uniform_ok, synced,
+    success, confidence, reason_code, decision_note, synced,
     gate_state ("open" | "unconfirmed" | null),
     sync_id (idempotency key), ...
   }

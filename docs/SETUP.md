@@ -57,16 +57,15 @@ This installs all dependencies for all 3 services (kiosk, guard, dashboard) via 
 3. Paste and run the entire file
 4. Do the same for all migrations in `database/migrations/` in order:
    - `003_add_sync_id.sql` — log idempotency for crash-safe sync
-   - `004_uniform_types_real.sql` — real uniform classes (replaces `002`)
-   - `005_align_uniforms_to_model.sql` — **REQUIRED**: aligns class ids to the trained 9-class YOLO model (CBMSD/CICI/COAG/Education). Uniform detection will not match correctly without it.
    - `006_compatibility_security.sql` — **REQUIRED for older/resumed projects**: adds missing access-log columns, idempotent sync, authenticated Guard/Dashboard writes, and Storage policies.
    - `007_gate_health.sql` — **gate feedback + kiosk health**: adds `gate_state` to access logs and the `kiosk_heartbeats` table (powers the Dashboard Kiosk Health page).
    - `008_guard_storage_policies.sql` — **REQUIRED**: Storage policies on `storage.objects` so a signed-in Guard user can upload/replace/delete student photos. Without it, Guard enrollment fails at the photo-upload step with `new row violates row-level security policy`.
    - `009_school_branding.sql` — school initials badge + kiosk voice toggle (`school_initials`, `voice_enabled`).
+   - `014_face_threshold_070.sql` — raises the face-match threshold to 0.70.
+   - `015_epass_lockdown_policy.sql` — guest e-pass fields, lockdown mode, and decision reason codes.
+   - `017_ai_briefings.sql` — `daily_briefings` cache for the dashboard AI briefing.
 
    > ✅ **Confirm everything landed:** paste `database/verify.sql` into the SQL Editor — it returns one PASS/FAIL row per migration (columns, the unique `sync_id` index, RLS + Storage policies), which is exactly what the anon key cannot see. Then run `pnpm preflight` for a live audit of seed data and demo students.
-
-   > ⚠️ **Skip `002_uniform_types.sql`** — it contained placeholder uniform data and is superseded by `004_uniform_types_real.sql`. If `005` was already run before it was updated, run `006` now.
 
 ### 2.3 Create Storage Bucket
 1. Go to **Storage** in the Supabase Dashboard
@@ -162,7 +161,7 @@ pnpm dev:kiosk      # → http://localhost:3002
    - **Course / Department** (required)
    - **Year Level** (optional)
    - **Section** (optional)
-3. Take **3 photos** at different angles (Front, Left 45°, Right 45°)
+3. Take **5 photos** at different angles (front, left 45°, right 45°, and two more)
 4. Click **Register Student**
 5. Photos upload to Supabase Storage
 6. Student record created in Supabase
@@ -242,7 +241,7 @@ Use this before wiring the terminal into a full station — it proves the gate c
 
    If these print the angles but the horn never moves, the ESP32 is generating pulses and the fault is wiring: no servo supply, missing common ground, or the signal wire not on GPIO 13.
 
-> The self-test does not touch face recognition, uniform detection or the database, so it is the fastest way to isolate a hardware fault from a software one.
+> The self-test does not touch face recognition or the database, so it is the fastest way to isolate a hardware fault from a software one.
 
 ### 7.2 Option B (fallback): Arduino Uno over USB
 1. Open `hardware/arduino/smart_gate.ino` in Arduino IDE
@@ -314,19 +313,20 @@ Or manually trigger: GitHub → Actions → Deploy → Run workflow → Select s
 
 ---
 
-## Step 9: Train YOLO Uniform Model (Optional)
+## Step 9: Set the Face Threshold and Policy (Optional)
 
-See the complete visual guide at **[docs/uniform-training.html](uniform-training.html)**.
+Three settings shape access at the gate. They live in `system_settings` and are
+editable from the Dashboard's Settings page:
 
-Quick steps:
-1. Take 100+ photos per uniform type
-2. Upload to [Roboflow](https://roboflow.com) for labeling
-3. Export in **YOLO11 format**
-4. Convert to **ONNX** (see training guide)
-5. Upload `uniform_yolo11n.onnx` to your Vercel project's `/public/models/` directory
-6. Update `YOLO_MODEL_URL` in `services/kiosk/src/lib/uniform.ts`
+| Key | Default | Effect |
+|-----|---------|--------|
+| `face_recognition_threshold` | `0.7` | Minimum cosine similarity for a match. Raising it reduces false accepts and increases retries. |
+| `lockdown_mode` | `false` | When true the kiosk denies everyone with `LOCKDOWN_ACTIVE`; the guard's manual override still works. |
+| `lockdown_reason` | (empty) | The sentence shown at the gate during a lockdown. |
 
----
+Guest passes set their own limit: `guests.valid_until`. An expired pass is
+denied at the gate with `GUEST_EXPIRED`. Re-test recognition after changing the
+threshold.
 
 ## Troubleshooting
 

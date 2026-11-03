@@ -246,13 +246,13 @@
   <div class="cover-badge">Capstone Project · 2026</div>
   <h1>Smart Gate System</h1>
   <p class="cover-subtitle">
-    An Industry-Standard AI-Powered Access Control System with In-Browser Face Recognition &amp; Uniform Detection
+    In-Browser Face Recognition &amp; Guest Pass Policy
   </p>
   
   <div class="cover-meta">
     <div>
       <span class="label">Technology</span>
-      <span class="value">Next.js 16 · ArcFace · YOLO11n</span>
+      Next.js 16 · ArcFace · Supabase
     </div>
     <div>
       <span class="label">Architecture</span>
@@ -315,10 +315,10 @@
   <div class="section-divider"></div>
 
   <p>
-    The <strong>Smart Gate System</strong> is an intelligent access control solution designed for educational institutions. It replaces traditional manual gate security with an automated system that verifies students through face recognition and uniform compliance checking — all running <strong>entirely in the browser</strong> on a standard Android tablet.
+    The <strong>Smart Gate System</strong> is an intelligent access control solution designed for educational institutions. It replaces traditional manual gate security with an automated system that verifies students through face recognition and an explicit access policy — all running <strong>entirely in the browser</strong> on a standard Android tablet.
   </p>
   <p>
-    Unlike traditional smart gate implementations that require a Raspberry Pi, Python backend, or cloud AI inference, this system achieves <strong>90% software / 10% hardware</strong> by leveraging <strong>MediaPipe Tasks Vision</strong> for face detection, <strong>ArcFace ONNX</strong> for face recognition (99.4% LFW accuracy), and <strong>YOLO11n</strong> for custom uniform detection — all executed inside a <strong>Web Worker</strong> using <strong>ONNX Runtime Web</strong> with <strong>WebGPU acceleration</strong>.
+    Unlike traditional smart gate implementations that require a Raspberry Pi, Python backend, or cloud AI inference, this system achieves <strong>90% software / 10% hardware</strong> by leveraging <strong>MediaPipe Tasks Vision</strong> for face detection, <strong>ArcFace ONNX</strong> for face recognition (99.4% LFW accuracy), and a <strong>policy layer</strong> for guest passes and campus lockdown — all executed inside a <strong>Web Worker</strong> using <strong>ONNX Runtime Web</strong> with <strong>WebGPU acceleration</strong>.
   </p>
   <p>
     The system follows a <strong>three-service monorepo architecture</strong> using Next.js 16, TypeScript, and pnpm workspaces: a <strong>kiosk PWA</strong> for the tablet gate, a <strong>guard station</strong> for student enrollment with multi-angle photo capture, and an <strong>admin dashboard</strong> for system configuration. Data syncs between IndexedDB (offline) and Supabase (cloud) when connectivity is available. CI/CD is handled through GitHub Actions with Turborepo-optimized builds, Dependabot for dependency updates, and CodeQL for security scanning.
@@ -343,7 +343,7 @@
   <div class="section-divider"></div>
 
   <p>
-    Traditional school gate security relies on manual visual inspection by security guards — an approach that is error-prone, inconsistent, and unscalable. Students can borrow IDs, impersonate others, or enter without proper uniform. Existing smart gate solutions require expensive hardware (Raspberry Pi, dedicated cameras, servers), complex Python-based AI pipelines, and constant internet connectivity.
+    Traditional school gate security relies on manual visual inspection by security guards — an approach that is error-prone, inconsistent, and unscalable. Students can borrow IDs, impersonate others, or walk in behind someone who was verified. Existing smart gate solutions require expensive hardware (Raspberry Pi, dedicated cameras, servers), complex Python-based AI pipelines, and constant internet connectivity.
   </p>
   <p>
     The core problem this project addresses: <strong>How can we build a highly accurate, affordable, and offline-capable smart gate system using only a consumer tablet and minimal hardware?</strong>
@@ -355,7 +355,7 @@
       <h4>Current Pain Points</h4>
       <ul>
         <li>Manual ID checks are slow and unreliable</li>
-        <li>Uniform violations go unnoticed</li>
+        No record of who actually entered, or why
         <li>No audit trail for entries</li>
         <li>Guard fatigue leads to missed violations</li>
         <li>Guest/visitor tracking is paper-based</li>
@@ -367,11 +367,11 @@
       <h4>Proposed Solution</h4>
       <ul>
         <li>Automated face recognition in 200-300ms</li>
-        <li>YOLO-based uniform compliance check</li>
+        Guest e-pass, lockdown, and explainable denials
         <li>Complete digital audit trail</li>
         <li>Runs on a $200 Android tablet</li>
         <li>Works fully offline</li>
-        <li>3-photo enrollment for high accuracy</li>
+        <li>5-angle enrollment for high accuracy</li>
       </ul>
     </div>
   </div>
@@ -394,7 +394,7 @@
     <div class="card">
       <div class="card-icon">🎯</div>
       <h4>Secondary</h4>
-      <p>Implement uniform compliance checking using custom-trained YOLO11n that detects course-specific uniform tops.</p>
+      Implement a policy layer — guest e-pass validity and campus lockdown — so the gate can deny by rule, not only by identity.
     </div>
     <div class="card">
       <div class="card-icon">🎯</div>
@@ -410,7 +410,7 @@
       <li>Face recognition with &gt;95% accuracy using ArcFace ONNX (512-dim embeddings)</li>
       <li>Complete offline operation — no internet required for core AI functions</li>
       <li>Three-photo enrollment (front, left 45°, right 45°) for robust matching</li>
-      <li>YOLO11n-based uniform detection with fail-closed behavior when the model is unavailable</li>
+      <li>Guest e-pass validity and campus lockdown enforced before any grant</li>
       <li>IndexedDB offline storage with background sync to Supabase</li>
       <li>ESP32-based gate control over Wi-Fi (WebSocket, own hotspot) with USB/Arduino fallback</li>
       <li>CI/CD pipeline with automated testing (28 unit tests)</li>
@@ -443,7 +443,7 @@
 │                                                      │              │
 │  ┌───────────────────────────────────────────────────▼──────────┐  │
 │  │              ACCESS DECISION ENGINE                           │  │
-│  │  Face Match + Uniform Check + Policy → Grant/Deny            │  │
+Face Match + Policy (lockdown / guest pass) → Grant or Deny
 │  └──────────────┬────────────────────────────────────┬──────────┘  │
 │                 │                                    │             │
 │  ┌──────────────▼──────────┐   ┌─────────────────────▼──────────┐ │
@@ -473,9 +473,9 @@
 │  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────────┐  │
 │  │ Admin Dashboard  │  │ Guard Station   │  │ Kiosk PWA        │  │
 │  │ Port 3000        │  │ Port 3001       │  │ Port 3002        │  │
-│  │ Student mgmt     │  │ 3-photo enroll  │  │ Face + Uniform   │  │
+│  │ Student mgmt     │  │ 5-angle enroll  │  │ Face + Policy    │  │
 │  │ Reports & logs   │  │ Camera capture  │  │ Gate control     │  │
-│  │ System config    │  │ Uniform assign  │  │ Offline-first    │  │
+Guest passes
 │  └─────────────────┘  └─────────────────┘  └──────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘
   </div>
@@ -504,7 +504,7 @@ Supabase ←────── <span class="hl-yellow">Kiosk</span> downloads st
 <span class="comment">// Main Thread                    // Worker Thread (inference.worker.ts)</span>
 
 face.ts ──sendToWorker("get_embedding")──┐
-uniform.ts ─sendToWorker("yolo_infer")───┤
+scanPolicy.ts ─confirm + policy───────────┤
                                          ▼
                                ┌─────────────────────┐
                                │  ONNX Runtime Web    │
@@ -514,8 +514,6 @@ uniform.ts ─sendToWorker("yolo_infer")───┤
                                │  • 112×112 → 512-dim│
                                │  • WebGPU execution │
                                │                     │
-                               │  yoloSession        │
-                               │  • YOLO11n (custom) │
                                │  • 640×640 → boxes  │
                                │  • WebGPU execution │
                                │                     │
@@ -575,11 +573,10 @@ uniform.ts ─sendToWorker("yolo_infer")───┤
           <td>512-dim embeddings, 99.4% LFW accuracy, in-browser via ONNX</td>
         </tr>
         <tr>
-          <td><span class="tag tag-green">Uniform Detection</span></td>
-          <td>YOLO11n (ONNX)</td>
-          <td>11n</td>
-          <td>Custom-trained ONNX model, runs in Web Worker</td>
-        </tr>
+            <td><span class="tag tag-green">Guest E-Pass Policy</span></td>
+            <td>Supabase policy tables</td>
+            <td>Time-boxed visitor passes, campus lockdown, and a reason code on every denial</td>
+          </tr>
         <tr>
           <td><span class="tag tag-green">AI Engine</span></td>
           <td>ONNX Runtime Web</td>
@@ -686,7 +683,7 @@ loop()
   │   ├── Compute cosine similarity vs all enrolled
   │   │
   │   └── If matched:
-  │       ├── Check uniform (YOLO; fails closed if no model is loaded)
+  Confirm identity (5 consecutive reads + 0.08 margin)
   │       ├── Decision: Grant / Deny / Continue
   │       ├── If granted: open gate (Arduino / simulated)
   │       ├── Log access to IndexedDB
@@ -703,7 +700,7 @@ loop()
     <ol>
       <li><strong>On first sync</strong>: Download enrolled students from Supabase → store in IndexedDB → process photos → generate embeddings</li>
       <li><strong>Face recognition</strong>: Looks up embeddings from IndexedDB (no network needed)</li>
-      <li><strong>Uniform detection</strong>: Downloads YOLO ONNX model once → cached by service worker</li>
+      <li><strong>Policy settings</strong>: lockdown state and guest validity synced from Supabase</li>
       <li><strong>Access logs</strong>: Written to IndexedDB immediately → synced to Supabase when online</li>
       <li><strong>Settings</strong>: Downloaded from Supabase on sync → used from IndexedDB when offline</li>
       <li><strong>Background sync</strong>: Triggers on init + network online events</li>
@@ -725,23 +722,11 @@ loop()
       <p>Uses a ref-based mutex to prevent concurrent photo processing when sync triggers while already processing.</p>
     </div>
     <div class="card">
-      <h4>📡 Fail-Closed Uniform Validation</h4>
-      <p>If the YOLO model cannot load, uniform validation does not silently approve access — it denies the attempt and logs the reason. Face recognition can still run in detection-only mode if ArcFace is unavailable, but uniform enforcement is not bypassed.</p>
-    </div>
-  </div>
-</div>
-
-<!-- ═══════════════════════════════════════════════════════════ -->
-<!-- 7. GUARD STATION -->
-<!-- ═══════════════════════════════════════════════════════════ -->
-
-<div class="container">
-  <h2 id="guard">7. Guard Station</h2>
-  <div class="section-divider"></div>
-
-  <p>The Guard Station is a web application used by security guards to enroll new students into the system. It captures 3 photos at different angles for robust face recognition.</p>
-
-  <h3>7.1 Enrollment Flow</h3>
+      <h4>📡 Explainable Denials</h4>
+        <p>Every denial names its reason in two places: a machine-readable
+        <code>reason_code</code> (<code>LOCKDOWN_ACTIVE</code>, <code>GUEST_EXPIRED</code>) and a
+        sentence the guard can read. The gate screen shows the sentence; the log keeps both, so a
+        refusal can always be explained after the fact.</p><h3>7.1 Enrollment Flow</h3>
   <div class="diagram">
 <span class="hl">Guard Station Enrollment</span>
 <span class="comment">// Each student gets 3 photos at different angles</span>
@@ -750,7 +735,7 @@ loop()
    ├── Full Name <span class="hl-red">*required</span>
    ├── Student ID (optional)
    ├── Course <span class="hl-red">*required</span>
-   │   └── Auto-loads uniform types for that course
+   Auto-loads the student's course
    ├── Year Level (optional)
    └── Section (optional)
 
@@ -780,12 +765,9 @@ loop()
     </div>
     <div class="card">
       <div class="card-icon">🎓</div>
-      <h4>Uniform Assignment</h4>
-      <p>Auto-loads uniform types from Supabase based on selected course. Shows what YOLO will detect.</p>
-    </div>
-    <div class="card">
-      <div class="card-icon">📝</div>
-      <h4>Recent Enrollments</h4>
+      <h4>Guest Pass Assignment</h4>
+        <p>The Guard Station records a guest's host and a validity window. The kiosk refuses the
+        pass the moment <code>valid_until</code> passes, and the guard is told to renew it.</p><h4>Recent Enrollments</h4>
       <p>Shows last 10 enrollments with timestamps and photo count. Quick links to open kiosk and dashboard.</p>
     </div>
   </div>
@@ -922,30 +904,23 @@ function cosineSimilarity(a, b) {
 }</code></pre>
   </div>
 
-  <h3>9.4 Uniform Detection</h3>
-  <div class="card">
-    <p>Uniform detection uses YOLO11n (custom-trained ONNX model) running in the Web Worker. If the model cannot be loaded, the kiosk does not silently approve access — it denies the attempt and logs the reason.</p>
-    <div class="diagram" style="margin: 1rem 0;">
-<span class="comment">// Uniform detection pipeline</span>
+  <h3>9.4 Confirmation and Policy</h3>
 
-checkUniform(video, faceBbox, expectedUniform, canvas)
-├── <span class="hl">YOLO model loaded?</span>
-│   ├── Yes → Run YOLO inference via Web Worker
-│   │   ├── Resize body region to 640×640
-│   │   ├── Send pixels to worker → ONNX inference
-│   │   ├── Post-process: decode boxes → NMS (IoU 0.5)
-│   │   ├── Find best detection by confidence
-│   │   ├── Check: detected class matches expected uniform?
-│   │   └── Return { ok, confidence, detail }
-│   │
-│   └── No → <span class="hl-red">Fail closed — access denied</span>
-│       └── Return { ok: false, detail: "Uniform detector unavailable" }
-│
-└── Return result
-    </div>
-  </div>
+        <p>A single frame is never a verdict. Before the decision pipeline runs, the same identity
+        must win five consecutive recognition ticks (~2.5&nbsp;s of holding still) and lead the
+        runner-up profile by at least 0.08. A stranger flickering between identities never confirms;
+        a real student confirms in about two seconds.</p>
 
-  <h3>9.5 Performance Comparison</h3>
+        <pre><span class="comment">// Confirmation + policy pipeline</span>
+confirmIdentity(state, personId, matched)
+├── same identity again? <span class="hl">count + 1</span>
+│   └── count &gt;= 5 AND margin &gt;= 0.08 → confirmed
+└── different identity  → reset count to 1
+
+policy(confirmed, isGuest, validUntil, lockdown)
+├── lockdown active   → deny  <span class="hl">LOCKDOWN_ACTIVE</span>
+├── guest pass expired→ deny  <span class="hl">GUEST_EXPIRED</span>
+└── otherwise         → grant <span class="hl">POLICY_PASS</span> / GUEST_PASS_VALID</pre><h3>9.5 Performance Comparison</h3>
   <div class="comparison">
     <div class="comparison-header comparison-old">❌ Traditional Approach</div>
     <div class="comparison-header comparison-new">✅ This Project</div>
@@ -1076,12 +1051,12 @@ startAutoReconnect();  // Retry logic with exponential backoff</code></pre>
         <tr>
           <td><code>students</code></td>
           <td>Enrolled students with face photos</td>
-          <td><code>id, name, student_id, department, uniform_type, photo_url, is_active</code></td>
+          <td><code>id, name, student_id, department, course, photo_url, is_active</code></td>
         </tr>
         <tr>
           <td><code>access_logs</code></td>
           <td>All gate access attempts</td>
-          <td><code>id, person_id, person_name, method, success, confidence, uniform_ok, device_timestamp</code></td>
+          <td><code>id, person_id, person_name, method, success, confidence, reason_code, decision_note, device_timestamp</code></td>
         </tr>
         <tr>
           <td><code>system_settings</code></td>
@@ -1089,15 +1064,15 @@ startAutoReconnect();  // Retry logic with exponential backoff</code></pre>
           <td><code>key, value, description</code></td>
         </tr>
         <tr>
-          <td><code>course_uniforms</code></td>
-          <td>Maps courses to uniform types</td>
-          <td><code>id, course, uniform_type_id</code></td>
-        </tr>
+            <td><code>guests</code></td>
+            <td>Visitor passes with a host and an expiry</td>
+            <td><code>id, name, host_name, valid_until, status</code></td>
+          </tr>
         <tr>
-          <td><code>uniform_types</code></td>
-          <td>Uniform definitions (name + description)</td>
-          <td><code>id, name, description</code></td>
-        </tr>
+            <td><code>daily_briefings</code></td>
+            <td>Cached AI briefing, one row per day</td>
+            <td><code>briefing_date, content, stats</code></td>
+          </tr>
         <tr>
           <td><code>staff</code></td>
           <td>Staff records</td>
@@ -1135,7 +1110,7 @@ startAutoReconnect();  // Retry logic with exponential backoff</code></pre>
 ┌─ ObjectStore: "students"
 │  Key: id (UUID)
 │  Data: StoredStudent {
-│    id, name, student_id, department, uniform_type,
+│    id, name, student_id, department, course,
 │    photo_url, embeddings: Float32Array[], is_active, updated_at
 │  }
 │
@@ -1144,7 +1119,7 @@ startAutoReconnect();  // Retry logic with exponential backoff</code></pre>
 │  Index: "synced" (0 = unsynced, 1 = synced)
 │  Data: StoredLog {
 │    person_id, person_name, direction, method,
-│    success, confidence, uniform_ok, synced, ...
+│    success, confidence, reason_code, decision_note, synced, ...
 │  }
 │
 └─ ObjectStore: "settings"
@@ -1324,7 +1299,7 @@ startAutoReconnect();  // Retry logic with exponential backoff</code></pre>
         <tr>
           <td><span class="tag tag-blue">Settings Parsing</span></td>
           <td>3</td>
-          <td>Uniform toggle, threshold parsing, invalid input</td>
+          Threshold parsing, confirmation gate, re-arm policy
         </tr>
         <tr>
           <td><span class="tag tag-green">Model Specs</span></td>
@@ -1409,7 +1384,7 @@ startAutoReconnect();  // Retry logic with exponential backoff</code></pre>
     <li><strong>WebGPU acceleration</strong> — 3-5x faster than WASM, leverages tablet GPU</li>
     <li><strong>ArcFace recognition</strong> — 99.4% LFW accuracy, the standard for face recognition in 2026</li>
     <li><strong>Offline-first</strong> — IndexedDB + service worker provide full offline capability</li>
-    <li><strong>3-photo enrollment</strong> — Multiple angles per student for robust matching</li>
+    <li><strong>5-angle enrollment</strong> — Multiple angles per student for robust matching</li>
     <li><strong>Monorepo with Turborepo</strong> — Industry standard for multi-service JavaScript projects</li>
     <li><strong>CI/CD with matrix builds</strong> — Parallel typecheck + build across 3 services</li>
     <li><strong>Security scanning</strong> — CodeQL + Dependabot for automated vulnerability management</li>
@@ -1419,7 +1394,7 @@ startAutoReconnect();  // Retry logic with exponential backoff</code></pre>
 
   <h3>14.3 Future Work</h3>
   <ul>
-    <li><strong>Live uniform training</strong> — In-app training workflow for adding new uniform types</li>
+    Multi-gate coordination across entrances
     <li><strong>Multi-tablet sync</strong> — Multiple kiosks sharing the same student database</li>
     <li><strong>QR guest passes</strong> — Self-service guest registration with QR code generation</li>
     <li><strong>Push notifications</strong> — Alert guards on unrecognized faces or policy violations</li>
@@ -1432,7 +1407,6 @@ startAutoReconnect();  // Retry logic with exponential backoff</code></pre>
     <ol style="margin: 0;">
       <li>Deng, J., Guo, J., Xue, N., &amp; Zafeiriou, S. (2019). <em>ArcFace: Additive Angular Margin Loss for Deep Face Recognition</em>. IEEE Conference on Computer Vision and Pattern Recognition (CVPR). <a href="https://arxiv.org/abs/1801.07698">https://arxiv.org/abs/1801.07698</a></li>
       <li>Lugaresi, C., et al. (2019). <em>MediaPipe: A Framework for Building Perception Pipelines</em>. Google Research. <a href="https://arxiv.org/abs/1906.08172">https://arxiv.org/abs/1906.08172</a></li>
-      <li>Jocher, G., et al. (2023). <em>Ultralytics YOLO11</em>. <a href="https://github.com/ultralytics/ultralytics">https://github.com/ultralytics/ultralytics</a></li>
       <li>ONNX Runtime Contributors. (2024). <em>ONNX Runtime Web: Cross-Platform Machine Learning Inference</em>. Microsoft. <a href="https://onnxruntime.ai/">https://onnxruntime.ai/</a></li>
       <li>Supabase Contributors. (2024). <em>Supabase: The Open Source Firebase Alternative</em>. <a href="https://supabase.com/">https://supabase.com/</a></li>
       <li>Vercel Inc. (2024). <em>Next.js: The React Framework for the Web</em>. <a href="https://nextjs.org/">https://nextjs.org/</a></li>
