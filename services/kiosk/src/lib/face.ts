@@ -11,6 +11,7 @@
  */
 
 import { FilesetResolver, FaceDetector, type FaceDetectorResult } from "@mediapipe/tasks-vision";
+import { faceTooSmall, squarePadRect } from "./faceCrop";
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -43,6 +44,8 @@ export interface MatchResult {
   matched: boolean;
   /** Best similarity among every OTHER enrolled profile (anti-false-accept margin). */
   runnerUp: number;
+  /** Winner is too close to the runner-up to name — a lookalike collision. */
+  ambiguous: boolean;
 }
 
 // ─── Constants ──────────────────────────────────────────────
@@ -50,6 +53,10 @@ export interface MatchResult {
 import { sendToWorker } from "./workerManager";
 
 const MATCH_THRESHOLD = 0.7; // Cosine similarity threshold (strict: strangers stay unknown)
+/** Nothing below this is trusted, whatever the dashboard setting says. */
+export const MIN_MATCH_THRESHOLD = 0.65;
+/** Winner must beat the runner-up by this much before a name is shown. */
+const AMBIGUOUS_GAP = 0.08;
 const MODEL_BASE_URL = "https://storage.googleapis.com/mediapipe-models";
 // ✅ Updated 2026 model URLs — verified working
 // MediaPipe face detector:
@@ -161,11 +168,8 @@ export async function getFaceEmbedding(
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
 
-    const [x, y, w, h] = bbox;
-    const sx = Math.floor(x * video.videoWidth);
-    const sy = Math.floor(y * video.videoHeight);
-    const sw = Math.floor(w * video.videoWidth);
-    const sh = Math.floor(h * video.videoHeight);
+    if (faceTooSmall(bbox)) return null;
+    const rect = squarePadRect(bbox, video.videoWidth, video.videoHeight);
 
     // 🔴 ACCURACY FIX #2: ArcFace expects 112x112 input
     const FACE_INPUT_SIZE = 112;
@@ -175,7 +179,7 @@ export async function getFaceEmbedding(
     const tempCtx = tempCanvas.getContext("2d");
     if (!tempCtx) return null;
 
-    tempCtx.drawImage(video, sx, sy, sw, sh, 0, 0, FACE_INPUT_SIZE, FACE_INPUT_SIZE);
+    tempCtx.drawImage(video, rect.x, rect.y, rect.w, rect.h, 0, 0, FACE_INPUT_SIZE, FACE_INPUT_SIZE);
 
     // Get pixel data
     const imageData = tempCtx.getImageData(0, 0, FACE_INPUT_SIZE, FACE_INPUT_SIZE);
@@ -213,7 +217,7 @@ export function matchFace(
   threshold: number = MATCH_THRESHOLD,
 ): MatchResult {
   if (enrolledFaces.length === 0) {
-    return { person: null, confidence: 0, matched: false, runnerUp: -1 };
+    return { person: null, confidence: 0, matched: false, runnerUp: -1, ambiguous: false };
   }
 
   let bestScore = -1;
@@ -242,12 +246,14 @@ export function matchFace(
   }
 
   const matched = bestScore >= threshold;
+  const ambiguous = matched && runnerUp >= 0 && bestScore - runnerUp < AMBIGUOUS_GAP;
 
   return {
     person: matched ? bestPerson : null,
     confidence: bestScore,
     matched,
     runnerUp,
+    ambiguous,
   };
 }
 
@@ -307,11 +313,8 @@ export async function getFaceEmbeddingFromCanvas(
   if (!faceWorkerReady) return null;
 
   try {
-    const [x, y, w, h] = bbox;
-    const sx = Math.floor(x * canvas.width);
-    const sy = Math.floor(y * canvas.height);
-    const sw = Math.floor(w * canvas.width);
-    const sh = Math.floor(h * canvas.height);
+    if (faceTooSmall(bbox)) return null;
+    const rect = squarePadRect(bbox, canvas.width, canvas.height);
 
     // 🔴 ACCURACY FIX #2: ArcFace expects 112x112 input
     const FACE_INPUT_SIZE = 112;
@@ -321,7 +324,7 @@ export async function getFaceEmbeddingFromCanvas(
     const tempCtx = tempCanvas.getContext("2d");
     if (!tempCtx) return null;
 
-    tempCtx.drawImage(canvas, sx, sy, sw, sh, 0, 0, FACE_INPUT_SIZE, FACE_INPUT_SIZE);
+    tempCtx.drawImage(canvas, rect.x, rect.y, rect.w, rect.h, 0, 0, FACE_INPUT_SIZE, FACE_INPUT_SIZE);
 
     const imageData = tempCtx.getImageData(0, 0, FACE_INPUT_SIZE, FACE_INPUT_SIZE);
 

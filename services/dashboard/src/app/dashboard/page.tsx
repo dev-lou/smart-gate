@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { displayDecision } from "@/lib/decisionText";
-import { AiBriefing, AiChat } from "@/components/AiAssistant";
 import {
   LayoutDashboard,
   Users,
@@ -175,12 +174,6 @@ export default function DashboardPage() {
             <p className="text-xs font-medium text-surface-400 mt-1">{card.sub}</p>
           </div>
         ))}
-      </div>
-
-      {/* AI assistant — briefing + plain-English Q&A over the gate log */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-6">
-        <AiBriefing />
-        <AiChat />
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-5 gap-6">

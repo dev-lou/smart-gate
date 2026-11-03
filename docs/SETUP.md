@@ -63,7 +63,7 @@ This installs all dependencies for all 3 services (kiosk, guard, dashboard) via 
    - `009_school_branding.sql` — school initials badge + kiosk voice toggle (`school_initials`, `voice_enabled`).
    - `014_face_threshold_070.sql` — raises the face-match threshold to 0.70.
    - `015_epass_lockdown_policy.sql` — guest e-pass fields, lockdown mode, and decision reason codes.
-   - `017_ai_briefings.sql` — `daily_briefings` cache for the dashboard AI briefing.
+   - `018_qr_school_id.sql` — school-ID QR fallback + face-match threshold floor.
 
    > ✅ **Confirm everything landed:** paste `database/verify.sql` into the SQL Editor — it returns one PASS/FAIL row per migration (columns, the unique `sync_id` index, RLS + Storage policies), which is exactly what the anon key cannot see. Then run `pnpm preflight` for a live audit of seed data and demo students.
 

@@ -509,7 +509,8 @@ describe("isBenignWasmLog", () => {
 // after a decision the kiosk only re-arms once the gate area is empty.
 
 import {
-  CONFIRM_TICKS,
+  CONFIRM_MIN_TICKS,
+  CONFIRM_WINDOW_MS,
   MARGIN_MIN,
   UNKNOWN_ABSENCE_CLEAR_MS,
   PERSON_COOLDOWN_MS,
@@ -810,71 +811,70 @@ describe("scan policy — visit generations", () => {
 });
 
 describe("scan policy — anti-false-accept confirmation", () => {
+  const T0 = 1_000_000;
+  const EMPTY = { id: null, count: 0, since: 0 };
+
   // The reported bug: a stranger steps up, one motion-blurred frame scores
   // 0.61 for an enrolled student, and the kiosk greets them with the wrong
   // name. A single hot frame must never be a verdict.
   it("does not confirm on the first hot frame for a stranger", () => {
-    let state = confirmIdentity({ id: null, count: 0 }, "student-a", true);
-    expect(identityConfirmed(state, 0.2)).toBe(false);
-    state = confirmIdentity(state, "student-a", true);
-    expect(identityConfirmed(state, 0.2)).toBe(false);
+    let state = confirmIdentity(EMPTY, "student-a", true, T0);
+    expect(identityConfirmed(state, 0.2, T0)).toBe(false);
+    state = confirmIdentity(state, "student-a", true, T0 + 500);
+    expect(identityConfirmed(state, 0.2, T0 + 500)).toBe(false);
   });
 
-  it("confirms after consecutive wins with a clear margin", () => {
-    let state = confirmIdentity({ id: null, count: 0 }, "student-a", true);
-    for (let i = 1; i < CONFIRM_TICKS; i++) {
-      state = confirmIdentity(state, "student-a", true);
-    }
-    expect(identityConfirmed(state, MARGIN_MIN)).toBe(true);
+  it("holds the gate for the full three-second window", () => {
+    expect(CONFIRM_WINDOW_MS).toBe(3000);
+    let state = confirmIdentity(EMPTY, "student-a", true, T0);
+    state = confirmIdentity(state, "student-a", true, T0 + 1500);
+    state = confirmIdentity(state, "student-a", true, T0 + 3000);
+    // Same wins, same margin — one millisecond early is still not a verdict.
+    expect(identityConfirmed(state, 1, T0 + 2999)).toBe(false);
+    expect(identityConfirmed(state, 1, T0 + 3000)).toBe(true);
   });
 
-  it("holds the student through the full 1-2-3 count before confirming", () => {
-    // At ~500ms per tick, CONFIRM_TICKS must cover a real 1-2-3 hold-still.
-    expect(CONFIRM_TICKS).toBeGreaterThanOrEqual(4);
-    let state = confirmIdentity({ id: null, count: 0 }, "student-a", true);
-    for (let i = 1; i < CONFIRM_TICKS - 1; i++) {
-      state = confirmIdentity(state, "student-a", true);
-    }
-    expect(identityConfirmed(state, 1)).toBe(false);
-    state = confirmIdentity(state, "student-a", true);
-    expect(identityConfirmed(state, 1)).toBe(true);
+  it("does not confirm on too few wins, even after the window", () => {
+    let state = confirmIdentity(EMPTY, "student-a", true, T0);
+    state = confirmIdentity(state, "student-a", true, T0 + 3000);
+    expect(state.count).toBe(2);
+    expect(identityConfirmed(state, 1, T0 + 5000)).toBe(false);
+    expect(CONFIRM_MIN_TICKS).toBe(3);
   });
 
   it("a tight lookalike race below the margin stays unknown", () => {
-    // Winner 0.71 vs runner-up 0.70 at the 0.70 threshold: scores pass but
-    // the margin does not — still no name, still no grant.
-    let state = confirmIdentity({ id: null, count: 0 }, "student-a", true);
-    for (let i = 1; i < CONFIRM_TICKS + 2; i++) {
-      state = confirmIdentity(state, "student-a", true);
-    }
-    expect(identityConfirmed(state, MARGIN_MIN - 0.01)).toBe(false);
-    expect(identityConfirmed(state, MARGIN_MIN)).toBe(true);
+    // Winner 0.71 vs runner-up 0.70: scores pass, the margin does not.
+    let state = confirmIdentity(EMPTY, "student-a", true, T0);
+    state = confirmIdentity(state, "student-a", true, T0 + 1500);
+    state = confirmIdentity(state, "student-a", true, T0 + 3000);
+    expect(identityConfirmed(state, MARGIN_MIN - 0.01, T0 + 3000)).toBe(false);
+    expect(identityConfirmed(state, MARGIN_MIN, T0 + 3000)).toBe(true);
   });
 
   it("a flickering identity never confirms", () => {
     // Stranger alternates between two enrolled lookalikes every tick.
-    let state = confirmIdentity({ id: null, count: 0 }, "student-a", true);
-    state = confirmIdentity(state, "student-b", true);
-    state = confirmIdentity(state, "student-a", true);
-    state = confirmIdentity(state, "student-b", true);
-    expect(identityConfirmed(state, 0.5)).toBe(false);
+    let state = confirmIdentity(EMPTY, "student-a", true, T0);
+    state = confirmIdentity(state, "student-b", true, T0 + 1000);
+    state = confirmIdentity(state, "student-a", true, T0 + 2000);
+    state = confirmIdentity(state, "student-b", true, T0 + 3000);
+    expect(identityConfirmed(state, 0.5, T0 + 4000)).toBe(false);
   });
 
-  it("a lookalike collision with no margin stays undecided", () => {
-    let state = confirmIdentity({ id: null, count: 0 }, "student-a", true);
-    for (let i = 1; i < CONFIRM_TICKS + 2; i++) {
-      state = confirmIdentity(state, "student-a", true);
-    }
-    // Winner 0.66 vs runner-up 0.65 — too close to call a name.
-    expect(identityConfirmed(state, 0.01)).toBe(false);
+  it("restarts the clock when the identity changes", () => {
+    let state = confirmIdentity(EMPTY, "student-a", true, T0);
+    state = confirmIdentity(state, "student-a", true, T0 + 2900);
+    // A different student steps in two seconds later: their window starts now.
+    state = confirmIdentity(state, "student-b", true, T0 + 3000);
+    expect(state.since).toBe(T0 + 3000);
+    expect(identityConfirmed(state, 1, T0 + 4000)).toBe(false);
   });
 
   it("an unmatched frame resets the tracker", () => {
-    let state = confirmIdentity({ id: null, count: 0 }, "student-a", true);
-    state = confirmIdentity(state, "student-a", true);
-    state = confirmIdentity(state, null, false);
-    expect(identityConfirmed(state, 1)).toBe(false);
-    expect(state).toEqual({ id: null, count: 0 });
+    let state = confirmIdentity(EMPTY, "student-a", true, T0);
+    state = confirmIdentity(state, "student-a", true, T0 + 1000);
+    state = confirmIdentity(state, null, false, T0 + 1500);
+    expect(identityConfirmed(state, 1, T0 + 9000)).toBe(false);
+    expect(state).toEqual({ id: null, count: 0, since: 0 });
   });
 });
 

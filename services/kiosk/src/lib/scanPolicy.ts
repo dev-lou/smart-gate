@@ -64,44 +64,55 @@ export const PERSON_REDECIDE_MS = 4_000;
  * Anti-false-accept confirmation gate.
  *
  * One hot frame is not a verdict: a motion-blurred frame can score 0.61 for
- * the wrong student and would previously grant immediately. The same identity
- * must win this many consecutive recognition ticks (~500ms each) before the
- * decision pipeline may run — roughly a 1-2-3 count of holding still and
- * looking at the terminal. A stranger flickering between identities never
- * confirms; the real student confirms in ~2.5s of holding still.
+ * the wrong student and would previously grant immediately, so the SAME
+ * identity has to keep winning before the decision pipeline may run.
+ *
+ * The wait is measured in TIME, not in ticks. With two students in the ovals
+ * each recognition tick carries two embeddings, so a five-tick count could
+ * stretch far past the intended hold and delay the gate. Three seconds is the
+ * short end that still leaves enough frames to separate a lookalike flicker
+ * from a real match; the tick floor only stops one slow frame from confirming.
  */
-export const CONFIRM_TICKS = 5;
+export const CONFIRM_WINDOW_MS = 3000;
+
+/** Consecutive wins required even when frames arrive slowly. */
+export const CONFIRM_MIN_TICKS = 3;
 
 /** Minimum margin of the winner over the runner-up identity. A lookalike
- *  collision (winner 0.71, runner-up 0.70) stays undecided — and therefore
- *  unknown — instead of granting the wrong person. */
+ *  collision (winner 0.71, runner-up 0.70) stays undecided \u2014 and therefore
+ *  unknown \u2014 instead of granting the wrong person. */
 export const MARGIN_MIN = 0.08;
 
-/** Consecutive-win tracker for one identity. */
+/** Win-streak tracker for one identity, in one standing position. */
 export interface ConfirmState {
   id: string | null;
   count: number;
+  /** When the current streak began (ms since epoch). */
+  since: number;
 }
 
-export const EMPTY_CONFIRM: ConfirmState = { id: null, count: 0 };
+export const EMPTY_CONFIRM: ConfirmState = { id: null, count: 0, since: 0 };
 
 /** Advance the confirmation tracker by one recognition tick. */
 export function confirmIdentity(
   prev: ConfirmState,
   personId: string | null,
   matched: boolean,
+  now: number,
 ): ConfirmState {
-  if (!matched || !personId) return { id: null, count: 0 };
-  if (prev.id !== personId) return { id: personId, count: 1 };
-  return { id: personId, count: prev.count + 1 };
+  if (!matched || !personId) return { id: null, count: 0, since: 0 };
+  if (prev.id !== personId) return { id: personId, count: 1, since: now };
+  return { id: personId, count: prev.count + 1, since: prev.since || now };
 }
 
-/** True once the tracked identity has confirmed AND stands clear of the
- *  runner-up. `margin` is winner minus runner-up similarity (pass 1 when
- *  there is no other enrolled profile to compare against). */
-export function identityConfirmed(state: ConfirmState, margin: number): boolean {
+/** True once the same identity has held for the full window, won enough ticks
+ *  and stands clear of the runner-up. `margin` is winner minus runner-up
+ *  similarity (pass 1 when there is no other enrolled profile to compare). */
+export function identityConfirmed(state: ConfirmState, margin: number, now: number): boolean {
   if (state.id === null) return false;
-  return state.count >= CONFIRM_TICKS && margin >= MARGIN_MIN;
+  if (state.count < CONFIRM_MIN_TICKS) return false;
+  if (now - state.since < CONFIRM_WINDOW_MS) return false;
+  return margin >= MARGIN_MIN;
 }
 
 /**

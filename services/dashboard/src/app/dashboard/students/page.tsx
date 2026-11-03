@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { ensureFaceBoxDetector, detectFaceBoxes, paintFaceBoxOverlay } from "@/lib/faceBox";
 import { useToast } from "@/components/ToastProvider";
+import QRCode from "qrcode";
+import { encodeStudentQr } from "@/lib/qrPayload";
 import EnrollmentWizard from "@/components/EnrollmentWizard";
 import {
   Users,
@@ -27,6 +29,7 @@ import {
   RefreshCw,
   Upload,
   Image as ImageIcon,
+  QrCode,
   SwitchCamera,
 } from "lucide-react";
 
@@ -130,6 +133,31 @@ export default function StudentsPage() {
   const [guests, setGuests] = useState<Guest[]>([]);
   const [guestsLoading, setGuestsLoading] = useState(false);
   const [guestDeleting, setGuestDeleting] = useState<Guest | null>(null);
+  /** School-ID QR shown to the student: generated from the ID on their card. */
+  const [qrStudent, setQrStudent] = useState<Student | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState("");
+
+  useEffect(() => {
+    if (!qrStudent?.student_id) {
+      setQrDataUrl("");
+      return;
+    }
+    let cancelled = false;
+    QRCode.toDataURL(encodeStudentQr(qrStudent.student_id), {
+      width: 512,
+      margin: 2,
+      errorCorrectionLevel: "M",
+    })
+      .then((url) => {
+        if (!cancelled) setQrDataUrl(url);
+      })
+      .catch(() => {
+        if (!cancelled) setQrDataUrl("");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [qrStudent]);
   const [guestOpen, setGuestOpen] = useState(false);
   const [guestForm, setGuestForm] = useState({ name: "", purpose: "", contact: "" });
   const [guestPhotos, setGuestPhotos] = useState<EditPhoto[]>(emptyEditPhotos);
@@ -708,12 +736,30 @@ export default function StudentsPage() {
 
   const activeCount = students.filter((s) => s.is_active).length;
 
+  /**
+   * A newly enrolled student's code is generated from the student ID they just
+   * typed, so show it straight away — the operator can print it before the
+   * student leaves the counter.
+   */
+  async function handleEnrolled() {
+    await loadStudents();
+    const supabase = getSupabase();
+    if (!supabase) return;
+    const { data } = await supabase
+      .from("students")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (data) setQrStudent(data as Student);
+  }
+
   return (
     <div>
       <EnrollmentWizard
         open={enrollOpen}
         onClose={() => setEnrollOpen(false)}
-        onEnrolled={loadStudents}
+        onEnrolled={handleEnrolled}
       />
 
       {/* Header */}
@@ -915,6 +961,13 @@ export default function StudentsPage() {
                           </td>
                           <td className="table-cell">
                             <div className="flex gap-1.5">
+                              <button
+                                onClick={() => setQrStudent(s)}
+                                title="Show school-ID QR"
+                                className="p-2 rounded-lg bg-surface-50 hover:bg-primary-50 text-surface-500 hover:text-primary-600 transition-colors cursor-pointer"
+                              >
+                                <QrCode className="w-4 h-4" />
+                              </button>
                               <button
                                 onClick={() => setViewing(s)}
                                 title="View profile"
@@ -1760,6 +1813,62 @@ export default function StudentsPage() {
       )}
 
       {/* ─── Guest delete confirm ─── */}
+      {/* ─── School-ID QR ─── */}
+      {qrStudent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="qr-print-area bg-white rounded-2xl shadow-2xl w-full max-w-sm p-6 text-center">
+            <div className="flex items-start justify-between mb-2">
+              <div className="text-left">
+                <h3 className="font-bold text-surface-900 text-lg">{qrStudent.name}</h3>
+                <p className="text-xs font-mono font-bold text-surface-500">
+                  {qrStudent.student_id ?? "No student ID"}
+                </p>
+              </div>
+              <button
+                onClick={() => setQrStudent(null)}
+                className="p-2 rounded-lg hover:bg-surface-50 text-surface-400 cursor-pointer"
+                aria-label="Close"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {qrDataUrl ? (
+              <img
+                src={qrDataUrl}
+                alt={`QR code for ${qrStudent.name}`}
+                className="w-64 h-64 mx-auto my-4"
+              />
+            ) : (
+              <p className="my-10 text-sm font-semibold text-rose-600">
+                {qrStudent.student_id
+                  ? "Could not generate the QR code."
+                  : "Add a student ID to generate a QR code."}
+              </p>
+            )}
+            <p className="text-xs text-surface-500 font-medium">
+              The kiosk scans this code together with the student&apos;s face.
+            </p>
+            <div className="flex gap-2 mt-4 no-print">
+              <button
+                onClick={() => window.print()}
+                className="flex-1 rounded-xl bg-primary-600 text-white font-bold py-2.5 text-sm hover:bg-primary-500 cursor-pointer"
+              >
+                Print
+              </button>
+              {qrDataUrl && (
+                <a
+                  href={qrDataUrl}
+                  download={`${qrStudent.student_id}-qr.png`}
+                  className="flex-1 rounded-xl border border-surface-200 text-surface-700 font-bold py-2.5 text-sm text-center hover:bg-surface-50"
+                >
+                  Download
+                </a>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {guestDeleting && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div

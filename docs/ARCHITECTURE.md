@@ -59,7 +59,7 @@ backend, and no Raspberry Pi. Three tiers:
 │  │ (3000)           │  │ (3001)           │  │ (3002)       │    │
 │  │ • auth           │  │ • 5-angle enrol  │  │ • face AI    │    │
 │  │ • logs, health   │  │ • guest passes   │  │ • policy     │    │
-│  │ • AI briefing    │  │ • recent enrols  │  │ • gate ctrl  │    │
+│  │ • ID QR codes    │  │ • recent enrols  │  │ • gate ctrl  │    │
 │  └──────────────────┘  └──────────────────┘  └──────────────┘    │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -267,7 +267,6 @@ one; the three-state model removes that ambiguity from the UI and the log.
 | **Gate** | Local hotspot with WPA2; no internet exposure |
 | **Camera** | Browser permission prompt, unlocked by Tap-to-Start |
 | **Service Worker** | HTTPS-only registration |
-| **AI key** | `GEMINI_API_KEY` is server-side only (dashboard route) |
 
 ## Performance Targets
 

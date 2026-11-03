@@ -96,3 +96,26 @@
   background: rgba(148, 163, 184, 0.3);
   border-radius: 2px;
 }
+
+/* School-ID QR card: print the code, not the dashboard around it. */
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  .qr-print-area,
+  .qr-print-area * {
+    visibility: visible !important;
+  }
+  .qr-print-area {
+    position: fixed !important;
+    inset: 0 !important;
+    margin: auto !important;
+    width: 100% !important;
+    max-width: 320px !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}

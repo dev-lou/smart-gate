@@ -49,11 +49,18 @@ const SETTING_META: Record<
     type: "number",
     description:
       "Minimum cosine similarity (0-1) the kiosk needs before it accepts a face. Higher = stricter (fewer false accepts, more false rejects); lower = more permissive. 0.7 is the recommended default — the kiosk additionally requires 5 consecutive matching reads (~2.5s of holding still) plus a clear margin over the next-closest profile, so a stranger is shown as Unknown instead of a wrong name.",
-    min: 0.3,
+    min: 0.65,
     max: 0.9,
     step: 0.05,
-  },    lockdown_mode: {
-      label: "Campus Lockdown",
+  },
+  allow_qr_entry: {
+    label: "Accept School-ID QR",
+    type: "boolean",
+    description:
+      "Fallback entry: when a student's face cannot be recognised, the kiosk opens for the school-ID QR that belongs to them. A recognised face still opens on its own. Turn OFF to require the face alone.",
+  },
+  lockdown_mode: {
+    label: "Campus Lockdown",
       type: "boolean",
       description: "When ON the kiosk denies everyone with LOCKDOWN_ACTIVE. Guard override with reason still logs.",
     },
@@ -87,6 +94,17 @@ const SETTING_META: Record<
 };
 
 const KNOWN_KEYS = Object.keys(SETTING_META);
+
+/**
+ * Values used when a known key has no row yet. Without this the page only
+ * renders rows that already exist, so a setting the operator has never saved
+ * (and which RLS stops a script from seeding) is invisible and cannot be
+ * turned on at all.
+ */
+const SETTING_DEFAULTS: Record<string, string> = {
+  allow_qr_entry: "true",
+};
+
 export default function SettingsPage() {
   const router = useRouter();
   const { pushToast } = useToast();
@@ -103,7 +121,19 @@ export default function SettingsPage() {
     if (settingsRes.error) {
       pushToast("error", `Settings: ${settingsRes.error.message}`);
     } else {
-      setSettings(settingsRes.data ?? []);
+      const rows = settingsRes.data ?? [];
+      const byKey = new Map(rows.map((r) => [r.key, r]));
+      // Every known key gets a row, even before it is saved for the first time.
+      const known = KNOWN_KEYS.map(
+        (key) =>
+          byKey.get(key) ?? {
+            key,
+            value: SETTING_DEFAULTS[key] ?? "",
+            description: null,
+          },
+      );
+      const extras = rows.filter((r) => !KNOWN_KEYS.includes(r.key));
+      setSettings([...known, ...extras]);
     }
     setLoading(false);
   }, [pushToast]);

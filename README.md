@@ -30,7 +30,7 @@
 │  • Face recog     │      │  • 5 photo angles │      │  • Auth (login)  │
 │  • Confirm + policy│     │  • Student/guest  │      │  • Access logs   │
 │  • Gate control   │      │  • Recent enrolls │      │  • Kiosk health  │
-│  • Offline-first  │      │                   │      │  • AI briefing   │
+│  • Offline-first  │      │                   │      │  • ID QR codes   │
 │  • IndexedDB sync │      └──────────────────┘      └──────────────────┘
 └────────┬─────────┘
          │
@@ -68,7 +68,6 @@
 | **ESP32 Wi-Fi (WebSocket)** | Gate control (primary) | Tablet ↔ ESP32 over its own hotspot |
 | **Web Serial API** | Gate control (fallback) | Arduino via USB-OTG |
 | **WebAudio + MP3** | Kiosk voice | Offline voice lines, no TTS dependency |
-| **Gemini (server route)** | Daily briefing + assistant | Dashboard-only, key never in the browser |
 | **Tailwind CSS** | Styling | Consistent UI across services |
 | **Vercel** | Deployment | Native Next.js support |
 
@@ -101,7 +100,7 @@ pnpm install
    - `009` — school branding + kiosk voice toggle
    - `014` — face-match threshold raised to 0.70
    - `015` — guest e-pass fields, lockdown mode, explainable decision columns
-   - `017` — `daily_briefings` cache for the dashboard AI briefing
+   - `018` — school-ID QR fallback + face-match threshold floor
 
    > ✅ **Verify what the live database actually has:** paste `database/verify.sql`
    > into the SQL Editor — one paste returns a PASS/FAIL row per migration.
@@ -119,11 +118,6 @@ cp services/dashboard/.env.example services/dashboard/.env.local
 ```env
 NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-```
-
-The dashboard's AI briefing needs one more variable, **server-side only**:
-```env
-GEMINI_API_KEY=...        # dashboard only; never exposed to the browser
 ```
 
 ### 4. Run Development
@@ -205,7 +199,7 @@ smart-gate/
 │   │   │   └── inference.worker.ts
 │   │   └── public/audio/        # welcome.mp3, denied.mp3, override.mp3
 │   ├── guard/                   # 🛡️ Guard Station (port 3001) — 5-angle enrollment
-│   └── dashboard/               # 📊 Admin (port 3000) — logs, health, AI briefing
+│   └── dashboard/               # 📊 Admin (port 3000) — logs, health, reports, QR codes
 ├── database/
 │   ├── schema.sql
 │   └── migrations/              # 003 → 017
@@ -242,7 +236,7 @@ smart-gate/
 - Supabase Auth login
 - Access logs with plain-language decision text and reason codes
 - Student management, kiosk health, settings
-- **AI briefing** (Gemini, one call per day, cached in `daily_briefings`) and an assistant chat — server-side key only
+- **School-ID QR** per student (auto-generated, printable) — scanned as the fallback when a face cannot be recognised
 
 ## Hardware
 

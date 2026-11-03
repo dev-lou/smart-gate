@@ -16,7 +16,7 @@ One page. Follow this order and the live demo cannot fail.
 | 6 | On the tablet: open the kiosk **once while online** → let the models load (~5 s) → sync → "Profiles" count = enrolled students | Kiosk `:3002` | ☐ |
 | 7 | **Airplane-mode test**: network off → reload kiosk → recognition, decision and gate command must all still work, logs queue | Tablet | ☐ |
 | 8 | Reconnect → logs auto-sync, heartbeat row appears in Dashboard → Kiosk Health | Tablet + Dashboard `:3000` | ☐ |
-| 9 | Set `GEMINI_API_KEY` in the dashboard if you want the AI briefing live | Dashboard `.env.local` | ☐ |
+| 9 | Dashboard → Students → **QR** → print or download each student's school-ID code | Dashboard `:3000` | ☐ |
 | 10 | `pnpm build` green on the laptop (backup demo machine) | Terminal | ☐ |
 
 > ⚠️ The tablet must be **loaded online once** (step 6) so the service worker
@@ -69,7 +69,7 @@ One page. Follow this order and the live demo cannot fail.
 | No profiles / "Awaiting Subject" forever | Sync panel → Force Sync → wait for Profiles count. If an access-log column error appears, run migration `006` |
 | Guard enrollment fails: "row-level security policy" | Run migration `008` (Storage policies on `student-photos`) |
 | Wrong table/column error | Run `database/verify.sql` — it names the migration to re-run |
-| AI briefing missing | `GEMINI_API_KEY` not set, or the day's briefing was never generated → Dashboard → regenerate once |
+| Student's face is not recognised | Hold up the printed school-ID QR — the kiosk opens on the code alone; print codes from Dashboard → Students → QR |
 | Arduino won't connect | Tap "Connect Hardware", pick the port; check USB-OTG cable + Arduino powered |
 | No internet at venue and models never cached | Can't happen if step 6 was done — that's the point of the airplane-mode rehearsal |
 

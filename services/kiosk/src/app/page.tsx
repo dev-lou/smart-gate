@@ -1,6 +1,10 @@
 "use client";
 
 import { evaluateGuestPass } from "@/lib/accessPolicy";
+import { evaluateScannedQr, normalizeStudentId, type QrSignal } from "@/lib/qr";
+import { decodeStudentQrInRegion } from "@/lib/qrScan";
+import { faceTooSmall, selectEnrollmentFace } from "@/lib/faceCrop";
+import { SINGLE_ZONE, SLOT_ZONES, type SlotZone, assignFacesToSlots, slotOfFace } from "@/lib/slotZones";
 
 import { useEffect, useRef, useState } from "react";
 import {
@@ -11,6 +15,7 @@ import {
   getFaceEmbedding,
   getFaceEmbeddingFromCanvas,
   matchFace,
+  MIN_MATCH_THRESHOLD,
   cleanupFaceResources,
   type FaceResult,
   type EnrolledFace,
@@ -35,7 +40,7 @@ import {
   UNKNOWN_ABSENCE_CLEAR_MS,
   VERDICT_HOLD_MS,
   clampGateWindow,
-  CONFIRM_TICKS,
+  CONFIRM_WINDOW_MS,
   confirmIdentity,
   shouldClearStaleScan,
   EMPTY_CONFIRM,
@@ -131,6 +136,17 @@ const RECOGNIZE_INTERVAL_MS = 500;
 
 /** How long to wait for the camera before booting into hardware test mode. */
 const CAMERA_START_TIMEOUT_MS = 12000;
+
+/** What a standing position shows once its student is confirmed. */
+type SlotCard = {
+  id: string;
+  name: string;
+  department: string;
+  confidence: number;
+} | null;
+
+/** What one standing position is reporting right now. */
+type SlotPhase = "empty" | "verifying" | "confirmed" | "unknown" | "granted" | "denied";
 
 /** How long a detected face keeps its reticle before it is considered gone. */
 const FACE_RETICLE_HOLD_MS = 1200;
@@ -407,8 +423,7 @@ export default function KioskPage() {
    * Recognition ticks update a raw per-tick winner that flickers between
    * lookalikes on motion-blurred frames; publishing that raw winner is how a
    * stranger briefly wore someone else's name. `confirmed` is set only once
-   * an identity passes the full confirmation gate (CONFIRM_TICKS consecutive
-   * wins + runner-up margin) and is cleared the moment a different face — or
+   * an identity holds the confirmation window (3s + runner-up margin) and is cleared the moment a different face — or
    * no face — is in frame.
    */
   const [confirmed, setConfirmed] = useState<{
@@ -502,6 +517,19 @@ export default function KioskPage() {
 
   // Tracking refs for performance
   const enrolledRef = useRef<EnrolledFace[]>([]);
+  /** School-ID QR layer: setting mirrored for render, last code read for decisions. */
+  const [allowQr, setAllowQr] = useState(true);
+  const [qrSeen, setQrSeen] = useState<QrSignal | null>(null);
+  /** One code per oval: left student and right student each present their own. */
+  const qrSlotsRef = useRef<[QrSignal | null, QrSignal | null]>([null, null]);
+  const lastQrDecodeRef = useRef(0);
+  /** Per-oval freshness stamp of the code already acted on. */
+  const qrHandledAtRef = useRef<[number, number]>([0, 0]);
+  const lastQrAttemptRef = useRef(0);
+  /** When each oval's face last matched — a stale match must not block its QR. */
+  const slotMatchedAtRef = useRef<[number, number]>([0, 0]);
+  /** When any face last matched (shared HUD / fallback guard). */
+  const lastMatchAtRef = useRef(0);
   const settingsRef = useRef<{
     matchThreshold: number;
     /** Gate open window from Settings — how long the barrier stays released. */
@@ -509,11 +537,14 @@ export default function KioskPage() {
     /** 015 lockdown: when true deny all with LOCKDOWN_ACTIVE. */
     lockdownMode: boolean;
     lockdownReason: string;
+    /** School-ID QR: accepted as the fallback when the face is not recognised. */
+    allowQr: boolean;
   }>({
     matchThreshold: 0.7,
     gateOpenDuration: 5,
     lockdownMode: false,
     lockdownReason: "",
+    allowQr: true,
   });
   const settingsLoadedRef = useRef(false);
 
@@ -579,6 +610,34 @@ export default function KioskPage() {
    * Policy lives in scanPolicy (unit-tested); this ref just carries it.
    */
   const confirmRef = useRef<ConfirmState>({ ...EMPTY_CONFIRM });
+  /** Confirmation runs per standing position, so two students can verify at once. */
+  const confirmSlotsRef = useRef<[ConfirmState, ConfirmState]>([
+    { ...EMPTY_CONFIRM },
+    { ...EMPTY_CONFIRM },
+  ]);
+  /** Name + course shown in each oval; null until that slot's identity confirms. */
+  const slotCardsRef = useRef<[SlotCard, SlotCard]>([null, null]);
+  const [slotPhases, setSlotPhases] = useState<[SlotPhase, SlotPhase]>(["empty", "empty"]);
+  const [slotDetails, setSlotDetails] = useState<[string, string]>(["", ""]);
+  /**
+   * One oval on a phone or tablet, two on a desktop display. Same page, same
+   * recognition — only the standing positions and the panel count change, so a
+   * small screen gets one usable target instead of two squeezed ones.
+   */
+  const [compact, setCompact] = useState(false);
+  const zones = compact ? SINGLE_ZONE : SLOT_ZONES;
+  const zonesRef = useRef<readonly SlotZone[]>(zones);
+  zonesRef.current = zones;
+
+  useEffect(() => {
+    // Width OR portrait aspect: a landscape tablet keeps two lanes, a phone in
+    // portrait does not.
+    const query = window.matchMedia("(max-width: 860px), (max-aspect-ratio: 1/1)");
+    const sync = () => setCompact(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, []);
   /** Settled unrecognised visitor — drives the amber "Unknown face" card. */
   const [unknownNotice, setUnknownNotice] = useState<{ score: number; at: number } | null>(null);
   /** Render-loop mirror of `holdNotice` — safe to read inside the rAF loop. */
@@ -629,6 +688,20 @@ export default function KioskPage() {
     setLastDecision({ name, personId, granted, at: Date.now() });
     if (lastDecisionTimerRef.current) clearTimeout(lastDecisionTimerRef.current);
     lastDecisionTimerRef.current = setTimeout(() => setLastDecision(null), LAST_RESULT_HOLD_MS);
+  }
+
+  /** Publish one oval's state without disturbing the other student's. */
+  function setSlotPhaseAt(slot: number, phase: SlotPhase, detail = "") {
+    setSlotPhases((prev) => {
+      const next: [SlotPhase, SlotPhase] = [prev[0], prev[1]];
+      next[slot] = phase;
+      return next;
+    });
+    setSlotDetails((prev) => {
+      const next: [string, string] = [prev[0], prev[1]];
+      next[slot] = detail;
+      return next;
+    });
   }
 
   // ─── Initialization ─────────────────────────────────────
@@ -902,6 +975,11 @@ export default function KioskPage() {
       if (shouldClearStaleScan({ faceFreeSince: faceFreeSinceRef.current, now: Date.now() })) {
         unknownSinceRef.current = 0;
         confirmRef.current = { ...EMPTY_CONFIRM };
+        confirmSlotsRef.current = [{ ...EMPTY_CONFIRM }, { ...EMPTY_CONFIRM }];
+        slotCardsRef.current = [null, null];
+        qrSlotsRef.current = [null, null];
+        setSlotPhases(["empty", "empty"]);
+        setSlotDetails(["", ""]);
         setConfirmProgress(0);
         if (confirmedRef.current) {
           confirmedRef.current = null;
@@ -944,6 +1022,49 @@ export default function KioskPage() {
           setHoldNotice(null);
       }
 
+      // ─── School-ID QR ────────────────────────────
+      // Decoded from the canvas the detector just drew, at ~3 Hz: fast enough
+      // to catch a code held up for a moment, cheap enough that recognition
+      // keeps its frame budget.
+      if (settingsRef.current.allowQr && Date.now() - lastQrDecodeRef.current >= 300) {
+        lastQrDecodeRef.current = Date.now();
+        // Each half reads its own code, so two students showing a code at the
+        // same time are two independent reads instead of a fight for one slot.
+        for (const zone of zonesRef.current) {
+          const single = zonesRef.current.length === 1;
+          const scanned = decodeStudentQrInRegion(
+            canvas,
+            single ? 0 : zone.id === 0 ? 0 : 0.5,
+            single ? 1 : zone.id === 0 ? 0.5 : 1,
+          );
+          if (!scanned) continue;
+          const signal = { studentId: scanned, seenAt: Date.now() };
+          qrSlotsRef.current[zone.id] = signal;
+          setQrSeen(signal);
+        }
+      }
+
+      // School-ID QR entry runs even with no face in frame: a student whose face
+      // cannot be read holds the code up and the gate still opens for them.
+      if (
+        settingsRef.current.allowQr &&
+        (qrSlotsRef.current[0] || qrSlotsRef.current[1]) &&
+        !processingRef.current &&
+        Date.now() - lastQrAttemptRef.current >= 800
+      ) {
+        lastQrAttemptRef.current = Date.now();
+        processingRef.current = true;
+        try {
+          for (const zone of zonesRef.current) {
+            await tryQrEntry(zone.id);
+          }
+        } catch (err) {
+          console.error("QR entry error:", err);
+        } finally {
+          processingRef.current = false;
+        }
+      }
+
       if (
         detected.length > 0 &&
         !processingRef.current &&
@@ -960,11 +1081,13 @@ export default function KioskPage() {
         lastRecognizedAtRef.current = Date.now();
         processingRef.current = true;
         try {
-          // Largest face in frame is the person at the gate.
-          const largestFace = detected.reduce((a, b) =>
-            a.bbox[2] * a.bbox[3] > b.bbox[2] * b.bbox[3] ? a : b,
-          );
-          await processFace(largestFace, video, canvas);
+          // Only the people standing in the two marked ovals are read. Anyone
+          // behind them — a queue, a passer-by — is outside the zones and is
+          // ignored, which is what stops the wrong person being named.
+          const assigned = assignFacesToSlots(detected, zonesRef.current);
+          for (const { face, slot } of assigned) {
+            await processFace(face, slot, video, canvas);
+          }
         } catch (err) {
           console.error("Process error:", err);
         } finally {
@@ -984,7 +1107,177 @@ export default function KioskPage() {
 
   // ─── Face Processing ────────────────────────────────────
 
-  async function processFace(face: FaceResult, video: HTMLVideoElement, canvas: HTMLCanvasElement) {
+  /**
+   * School-ID QR entry \u2014 the fallback for a face that cannot be recognised.
+   *
+   * A recognised face always wins: this only runs when no face matched, and it
+   * opens the gate for the student the code belongs to. An unenrolled code is
+   * reported honestly instead of being ignored.
+   */
+  async function tryQrEntry(slot: number) {
+    const signal = qrSlotsRef.current[slot];
+    if (!signal || qrHandledAtRef.current[slot] >= signal.seenAt) return;
+
+    const outcome = evaluateScannedQr({
+      allowQr: settingsRef.current.allowQr,
+      qr: signal,
+      now: Date.now(),
+      enrolledStudentIds: enrolledRef.current.map((s) => s.student_id),
+    });
+    if (outcome.code === "DISABLED" || outcome.code === "NO_CODE") return;
+    if (outcome.code === "STALE") {
+      qrSlotsRef.current[slot] = null;
+      setQrSeen(null);
+      return;
+    }
+    // A face that already matched owns this decision \u2014 never double-log.
+    if (Date.now() - slotMatchedAtRef.current[slot] < 2000) return;
+
+    qrHandledAtRef.current[slot] = signal.seenAt;
+
+    if (outcome.code === "UNKNOWN") {
+      const personId = `qr:${outcome.studentId}`;
+      // Re-read every few hundred ms while the code is held up: one decision
+      // per minute, like every other path.
+      const prevUnknown = lastDecisionByPersonRef.current.get(personId);
+      if (prevUnknown && isRepeatDecision({ lastDecisionAt: prevUnknown.at, now: Date.now() })) return;
+      lastDecisionByPersonRef.current.set(personId, { at: Date.now(), granted: false });
+      const detail = "School ID not enrolled \u2014 see the guard station";
+      ++decisionSeqRef.current;
+      setKioskState("denied");
+      playCue("deny");
+      setStatusMessage(detail);
+      setHoldNotice({ kind: "denied", name: outcome.studentId, at: Date.now(), personId, detail });
+      rememberDecision(outcome.studentId, personId, false);
+      setSlotPhaseAt(slot, "denied", detail);
+      await addLog({
+        person_id: null,
+        person_name: outcome.studentId,
+        person_type: "student",
+        direction: "entry",
+        method: "qr",
+        success: false,
+        confidence: 0,
+        failure_reason: detail,
+        reason_code: "QR_UNKNOWN",
+        decision_note: detail,
+        client_id: "kiosk-01",
+        gate_state: "closed",
+        device_timestamp: new Date().toISOString(),
+      }).catch((err) => console.warn("[Kiosk] Log write failed:", err));
+      refreshStats();
+      setTimeout(() => {
+        setKioskState("ready");
+        setStatusMessage("Ready");
+        setScanStep("searching");
+      }, VERDICT_HOLD_MS);
+      return;
+    }
+
+    const person = enrolledRef.current.find(
+      (s) => normalizeStudentId(s.student_id) === normalizeStudentId(outcome.studentId),
+    );
+    if (!person) return;
+
+    const prev = lastDecisionByPersonRef.current.get(person.id);
+    if (prev?.granted && isRepeatDecision({ lastDecisionAt: prev.at, now: Date.now() })) {
+      setHoldNotice({ kind: "granted", name: person.name, at: prev.at, personId: person.id });
+      return;
+    }
+
+    const cardToken = ++decisionSeqRef.current;
+    setKioskState("granted");
+    playCue("grant");
+    setStatusMessage(`Welcome, ${person.name}!`);
+    setVerdict({ person, confidence: 0, isGuest: false });
+    setScanStep("done");
+    slotCardsRef.current[slot] = {
+      id: person.id,
+      name: person.name,
+      department: person.department ?? "",
+      confidence: 0,
+    };
+    setSlotPhaseAt(slot, "granted");
+
+    const gateConnectedNow = gateConnectedRef.current;
+    if (gateConnectedNow) {
+      await openGate().catch((err) => console.warn("[Kiosk] Gate open failed:", err));
+    }
+    const gateConfirmed = gateConnectedNow
+      ? await confirmGateOpen(3000).catch(() => false)
+      : false;
+    const gateOutcome = resolveGateOutcome({
+      gateConnected: gateConnectedNow,
+      confirmed: gateConfirmed,
+    });
+    setGateState(gateOutcome);
+    const gateOpenSeconds = clampGateWindow(settingsRef.current.gateOpenDuration);
+    setGateSecondsLeft(gateOpenSeconds);
+    gateBannerUntilRef.current = Date.now() + gateOpenSeconds * 1000;
+
+    frameClearedRef.current = false;
+    const grantedAt = Date.now();
+    lastDecisionByPersonRef.current.set(person.id, { at: grantedAt, granted: true });
+    rememberDecision(person.name, person.id, true);
+    setHoldNotice({
+      kind: "granted",
+      name: person.name,
+      at: grantedAt,
+      personId: person.id,
+    });
+
+    await addLog({
+      person_id: person.id,
+      person_name: person.name,
+      person_type: "student",
+      direction: "entry",
+      method: "qr",
+      success: true,
+      confidence: 0,
+      failure_reason: "School ID QR verified \u2014 face not required",
+      reason_code: "QR_PASS",
+      decision_note: `School ID QR ${person.student_id} verified \u2014 face not required`,
+      client_id: "kiosk-01",
+      gate_state: gateStateForLog({ gateConnected: gateConnectedNow, confirmed: gateConfirmed }),
+      device_timestamp: new Date().toISOString(),
+    }).catch((err) => console.warn("[Kiosk] Log write failed:", err));
+    refreshStats();
+    updateEnrollmentHealth?.();
+
+    if (gateConnectedNow) {
+      setTimeout(() => {
+        closeGate().catch((err) => console.warn("[Kiosk] Gate close failed:", err));
+      }, gateOpenSeconds * 1000);
+    }
+
+    setTimeout(() => {
+      if (decisionSeqRef.current !== cardToken) return;
+      setKioskState("ready");
+      setStatusMessage("Ready");
+      setVerdict(null);
+      setLastMatch(null);
+      setScanStep("searching");
+      if (gateBannerUntilRef.current === 0 || Date.now() >= gateBannerUntilRef.current) {
+        setGateState(null);
+        setGateSecondsLeft(null);
+      }
+    }, VERDICT_HOLD_MS);
+  }
+
+  async function processFace(
+    face: FaceResult,
+    slot: number,
+    video: HTMLVideoElement,
+    canvas: HTMLCanvasElement,
+  ) {
+    // Too far away to score: a 40-pixel face embeds as noise and noise matches
+    // whoever it happens to be closest to.
+    if (faceTooSmall(face.bbox)) {
+      setScanStep("face");
+      setStatusMessage("Step closer — hold still inside the frame");
+      return;
+    }
+
     // Get face embedding
     const embedding = await getFaceEmbedding(video, face.bbox, canvas);
     if (!embedding) return;
@@ -992,6 +1285,8 @@ export default function KioskPage() {
     // Match against enrolled faces
     const match = matchFace(embedding, enrolledRef.current, settingsRef.current.matchThreshold);
     lastMatchRef.current = match;
+    lastMatchAtRef.current = Date.now();
+    if (match.matched) slotMatchedAtRef.current[slot] = Date.now();
     setLastMatch(match);
 
     // A below-threshold read is not a verdict yet. The first frames of a
@@ -1013,6 +1308,9 @@ export default function KioskPage() {
     // Publish the phase for the on-screen pipeline: identity is resolved, so
     // either we are verifying the decision or this face is unknown.
     setScanStep(match.matched ? "verify" : settledUnknown ? "done" : "face");
+    if (settledUnknown && !match.matched) {
+      setSlotPhaseAt(slot, "unknown", `${Math.max(0, Math.round(match.confidence * 100))}% closest`);
+    }
 
     // ─── Unknown-visitor notice (settled, still no match) ──
     // Surfaced here — ahead of every early-return below — so a stranger always
@@ -1046,14 +1344,20 @@ export default function KioskPage() {
     // ticks AND stand clear of the runner-up before the decision pipeline
     // (verdict → log → gate) may run. Until then the HUD shows a
     // nameless "verifying" state — this only withholds the grant.
-    confirmRef.current = confirmIdentity(
-      confirmRef.current,
+    const slotConfirm = (confirmSlotsRef.current[slot] = confirmIdentity(
+      confirmSlotsRef.current[slot],
       match.matched && match.person ? match.person.id : null,
       match.matched,
+      Date.now(),
+    ));
+    confirmRef.current = slotConfirm; // HUD mirror only
+    setConfirmProgress(
+      Math.max(...confirmSlotsRef.current.map((c) => (c.id ? Date.now() - c.since : 0))),
     );
-    setConfirmProgress(confirmRef.current.count);
     const margin = match.runnerUp < 0 ? 1 : match.confidence - match.runnerUp;
-if (!identityConfirmed(confirmRef.current, margin)) {
+    if (!identityConfirmed(slotConfirm, margin, Date.now())) {
+      // No name in the oval until the count completes; a lost match clears it.
+      if (!match.matched) slotCardsRef.current[slot] = null;
       return;
     }
 
@@ -1067,6 +1371,15 @@ if (!identityConfirmed(confirmRef.current, margin)) {
       };
       confirmedRef.current = c;
       setConfirmed(c);
+    }
+    if (match.person) {
+      slotCardsRef.current[slot] = {
+        id: match.person.id,
+        name: match.person.name,
+        department: match.person.department ?? "",
+        confidence: match.confidence,
+      };
+      setSlotPhaseAt(slot, "confirmed");
     }
 
     // ─── Per-identity decision gate ─────────────────────
@@ -1148,6 +1461,7 @@ if (!identityConfirmed(confirmRef.current, margin)) {
         confidence: match.confidence,
         isGuest: isGuestMatch,
       });
+      setSlotPhaseAt(slot, "granted");
 
       // Open gate (Wi-Fi ESP32 or USB Arduino)
       // 🔴 FIX BUG #1: Use ref for gate state check
@@ -1270,6 +1584,7 @@ if (!identityConfirmed(confirmRef.current, margin)) {
         confidence: match.confidence,
         isGuest: false,
       });
+      setSlotPhaseAt(slot, "denied", detail);
 
       // Same duplicate guard as a grant: a denial must not be
       // re-logged every few seconds while the student stands there. The
@@ -1377,36 +1692,54 @@ if (!identityConfirmed(confirmRef.current, margin)) {
 
     const unit = W / 100; // scale everything off the frame width
 
-    // ── 1. Nobody in frame: show the guide so people know where to stand ──
-    if (faces.length === 0 && verifying) {
-      const gw = Math.min(W * 0.46, H * 0.5);
-      const gh = gw * 1.34;
-      const gx = (W - gw) / 2;
-      const gy = H * 0.48 - gh / 2;
-      // Kept deliberately faint: this is a hint, not a mask. A student should
-      // see their own face clearly while they line up.
-      const pulse = 0.3 + 0.22 * Math.sin(now / 430);
+    // ── 1. The two standing positions ──
+    // Always visible while scanning. Only faces centred inside an oval are read,
+    // so a queue behind the student cannot change the answer, and each oval
+    // names the student standing in it — name and course once confirmed.
+    if (verifying) {
+      for (const zone of zonesRef.current) {
+        const card = slotCardsRef.current[zone.id];
+        const cx = zone.cx * W;
+        const cy = zone.cy * H;
+        const rx = zone.rx * W;
+        const ry = zone.ry * H;
+        const occupied = lastFacesRef.current.some((f) => slotOfFace(f.bbox) === zone.id);
+        const rgb = card ? "16, 185, 129" : occupied ? "96, 165, 250" : "255, 255, 255";
+        // Both ovals must read as standing spots at all times. The old idle
+        // pulse dipped to 0.26 over a dark camera image, so an empty half looked
+        // like a dead screen next to the busy one; the baseline is now high
+        // enough to always be seen, with only a gentle breathe on top.
+        const alpha = card || occupied ? 0.9 : 0.6 + 0.07 * Math.sin(now / 430 + zone.id);
 
-      ctx.save();
-      ctx.setLineDash([unit * 2.2, unit * 1.9]);
-      ctx.lineDashOffset = -((now / 26) % 1000);
-      ctx.lineWidth = Math.max(2.5, unit * 0.4);
-      ctx.strokeStyle = `rgba(255, 255, 255, ${pulse})`;
-      ctx.beginPath();
-      ctx.ellipse(W / 2, gy + gh / 2, gw / 2, gh / 2, 0, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
+        // Tall oval, like a person: a head and shoulders are taller than they
+        // are wide, and stopping short of the centre line keeps a face near the
+        // divider out of both zones.
+        ctx.save();
+        ctx.setLineDash(card ? [] : [unit * 2.2, unit * 1.9]);
+        ctx.lineDashOffset = -((now / 26) % 1000);
+        ctx.lineWidth = Math.max(2.5, unit * (card ? 0.55 : 0.5));
+        ctx.strokeStyle = `rgba(${rgb}, ${alpha})`;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
 
-      drawBrackets(ctx, gx, gy, gw, gh, "255, 255, 255", 0.32, Math.max(2, unit * 0.4), unit * 6);
-      drawChip(
-        ctx,
-        W / 2,
-        Math.min(H - unit * 12, gy + gh + unit * 7),
-        "POSITION YOUR FACE IN THE OVAL",
-        "59, 130, 246",
-        "center",
-        Math.max(13, unit * 2.1),
-      );
+        // An empty oval still says what it wants, so the screen never looks
+        // like one working terminal beside a blank one. The pill is dark because
+        // drawChip() writes white text — a white pill would be invisible on the
+        // idle (white) oval colour.
+        if (!card) {
+          drawChip(
+            ctx,
+            cx,
+            cy + ry * 0.74,
+            occupied ? "HOLD STILL" : "STAND HERE",
+            occupied ? rgb : "30, 41, 59",
+            "center",
+            Math.max(11, unit * 1.5),
+          );
+        }
+      }
     }
 
     // ── 2. Face reticle(s) ──
@@ -1421,8 +1754,10 @@ if (!identityConfirmed(confirmRef.current, margin)) {
       // (full hold-still count + runner-up margin) lights the frame green. A
       // raw per-tick winner stays blue until it confirms — a stranger
       // flickering between lookalikes must never see a green "you" signal.
+      const faceSlot = slotOfFace(face.bbox, zonesRef.current);
+      const slotCard = faceSlot === null ? null : slotCardsRef.current[faceSlot];
       const confirmedLive =
-        match?.matched === true && match.person?.id === confirmedRef.current?.id;
+        !!slotCard && match?.matched === true && match.person?.id === slotCard.id;
       const rgb =
         state === "denied"
           ? "244, 63, 94"
@@ -1718,16 +2053,17 @@ if (!identityConfirmed(confirmRef.current, margin)) {
             if (!photoCanvas) continue;
 
             const faces = detectFacesFromCanvas(photoCanvas);
-            if (!faces || faces.length === 0) {
-              console.warn(`No face detected in photo for ${student.name}`);
+            const pick = selectEnrollmentFace(faces ?? [], photoCanvas.width);
+            if (!pick.ok) {
+              // Never embed "whatever face was biggest": a group photo used to
+              // file a classmate's face under this student's name.
+              console.warn(
+                `[Kiosk] Skipped a photo for ${student.name}: ${pick.reason}.`,
+              );
               continue;
             }
 
-            const largestFace = faces.reduce((a, b) =>
-              a.bbox[2] * a.bbox[3] > b.bbox[2] * b.bbox[3] ? a : b,
-            );
-
-            const embedding = await getFaceEmbeddingFromCanvas(photoCanvas, largestFace.bbox);
+            const embedding = await getFaceEmbeddingFromCanvas(photoCanvas, pick.face.bbox);
             if (embedding && embedding.length > 0) {
               embeddings.push(embedding);
             }
@@ -1825,9 +2161,22 @@ if (!identityConfirmed(confirmRef.current, margin)) {
       if (threshold) {
         const parsed = parseFloat(threshold.value);
         if (!isNaN(parsed)) {
-          settingsRef.current.matchThreshold = parsed;
+          // A low value here is how the gate started naming the wrong student:
+          // 0.6 was saved from the dashboard and used verbatim.
+          const safe = Math.max(MIN_MATCH_THRESHOLD, parsed);
+          if (safe !== parsed) {
+            console.warn(
+              `[Kiosk] face_recognition_threshold ${parsed} is below the ${MIN_MATCH_THRESHOLD} floor — using ${MIN_MATCH_THRESHOLD}. Raise it in Dashboard → Settings.`,
+            );
+          }
+          settingsRef.current.matchThreshold = safe;
         }
       }
+
+      const qrSetting = settings.find((s) => s.key === "allow_qr_entry");
+      const qrAllowed = (qrSetting?.value ?? "true") !== "false";
+      settingsRef.current.allowQr = qrAllowed;
+      setAllowQr(qrAllowed);
 
       // Gate open window — the dashboard has always written this row, but the
       // kiosk never read it and hardcoded 5s instead.
@@ -2084,7 +2433,7 @@ if (!identityConfirmed(confirmRef.current, margin)) {
     const matched = confirmedLive !== null;
     const verifyHint =
       confirmProgress > 0
-        ? "Verifying identity — hold still " + Math.min(confirmProgress, CONFIRM_TICKS) + "/" + CONFIRM_TICKS
+        ? `Verifying identity — hold still ${Math.max(1, Math.ceil((CONFIRM_WINDOW_MS - confirmProgress) / 1000))}s`
         : "Verifying identity — look at the camera and hold still";
 
     let face: StepVisual = "working";
@@ -2148,7 +2497,7 @@ if (!identityConfirmed(confirmRef.current, margin)) {
           role="button"
           tabIndex={0}
           aria-label="Tap screen to start"
-          className="absolute inset-0 z-50 bg-[#f8fafc] flex flex-col justify-between p-6 sm:p-10 lg:p-14 overflow-y-auto select-none cursor-pointer"
+          className="absolute inset-0 z-50 bg-[#f8fafc] flex flex-col justify-between gap-3 p-3.5 sm:p-10 lg:p-14 overflow-y-auto select-none cursor-pointer"
         >
           {/* Ambient luminous glow orbs (light theme) */}
           <div className="absolute -top-32 -left-32 w-96 h-96 bg-blue-400/10 rounded-full blur-3xl pointer-events-none" />
@@ -2159,14 +2508,14 @@ if (!identityConfirmed(confirmRef.current, margin)) {
           <div className="absolute inset-0 bg-[radial-gradient(#cbd5e1_1px,transparent_1px)] [background-size:28px_28px] opacity-40 pointer-events-none" />
 
           {/* Institutional Top Header (Edge-to-Edge Full Width) */}
-          <div className="relative z-10 flex items-center justify-between w-full max-w-5xl mx-auto pb-4 sm:pb-6 border-b border-slate-200/80 pointer-events-none">
+          <div className="relative z-10 flex items-center justify-between gap-2 w-full max-w-5xl mx-auto pb-2.5 sm:pb-6 border-b border-slate-200/80 pointer-events-none">
             <div className="flex items-center gap-3.5 sm:gap-4">
               <img src="/isufst-logo.png" alt="ISUFST logo" className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl object-contain p-0.5 shadow-lg shadow-blue-600/25 shrink-0 bg-white" />
               <div className="leading-snug">
-                <p className="text-sm sm:text-base md:text-lg font-black tracking-tight text-slate-900 uppercase">
+                <p className="text-[10px] leading-[1.15] sm:text-base md:text-lg font-black tracking-tight text-slate-900 uppercase">
                   {schoolBrand.name}
                 </p>
-                <p className="text-xs sm:text-sm font-semibold text-blue-600 tracking-wider uppercase">
+                <p className="text-[9px] leading-tight sm:text-sm font-semibold text-blue-600 tracking-wider uppercase">
                   Smart Gate Automated Terminal • Gate 01 • Main Entrance
                 </p>
               </div>
@@ -2175,12 +2524,12 @@ if (!identityConfirmed(confirmRef.current, margin)) {
             {/* Live Clock & Node status badge */}
             <div className="flex items-center gap-2.5 sm:gap-3">
               {currentTime && (
-                <div className="flex items-center gap-2 px-4 py-2 sm:px-5 sm:py-2.5 rounded-2xl bg-white border border-slate-200/90 shadow-sm text-sm sm:text-base font-mono font-bold text-slate-800">
+                <div className="hidden sm:flex items-center gap-2 px-4 py-2 sm:px-5 sm:py-2.5 rounded-2xl bg-white border border-slate-200/90 shadow-sm text-sm sm:text-base font-mono font-bold text-slate-800">
                   <Clock className="w-4 h-4 text-blue-600" />
                   <span>{currentTime}</span>
                 </div>
               )}
-              <div className="flex items-center gap-2.5 px-4 py-2 sm:px-5 sm:py-2.5 rounded-2xl bg-emerald-50 border border-emerald-200/90 shadow-sm text-sm sm:text-base font-bold text-emerald-700">
+              <div className="flex shrink-0 items-center gap-1.5 px-2.5 py-1.5 sm:gap-2.5 sm:px-5 sm:py-2.5 rounded-2xl bg-emerald-50 border border-emerald-200/90 shadow-sm text-[11px] sm:text-base font-bold text-emerald-700">
                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
                 <span>Ready</span>
               </div>
@@ -2190,7 +2539,7 @@ if (!identityConfirmed(confirmRef.current, margin)) {
           {/* Full-Screen Center Stage — Standing Eye Level Display */}
           <div className="relative z-10 flex-1 flex flex-col items-center justify-center w-full max-w-4xl mx-auto py-6 sm:py-10 space-y-6 sm:space-y-8 text-center pointer-events-auto">
             {/* Massive Biometric Scanning Emblem */}
-            <div className="relative mx-auto w-32 h-32 sm:w-44 sm:h-44 md:w-52 md:h-52 flex items-center justify-center">
+            <div className="relative mx-auto w-20 h-20 sm:w-44 sm:h-44 md:w-52 md:h-52 flex items-center justify-center">
               <div className="absolute inset-0 rounded-full border-2 border-blue-500/20 animate-ping opacity-40" />
               <div className="absolute -inset-3 sm:-inset-4 rounded-full border-2 border-dashed border-blue-400/40 animate-[spin_25s_linear_infinite]" />
               <div className="absolute -inset-7 sm:-inset-8 rounded-full border border-blue-300/20" />
@@ -2205,46 +2554,46 @@ if (!identityConfirmed(confirmRef.current, margin)) {
                 <Sparkles className="w-3.5 h-3.5 text-blue-600" /> AI Biometric & Policy
                 Verification
               </div>
-              <h1 className="text-3xl sm:text-5xl md:text-6xl font-black text-slate-900 tracking-tight leading-none">
+              <h1 className="text-2xl sm:text-5xl md:text-6xl font-black text-slate-900 tracking-tight leading-none">
                 Smart Gate Terminal
               </h1>
-              <p className="text-base sm:text-xl md:text-2xl text-slate-600 font-medium">
+              <p className="text-xs sm:text-xl md:text-2xl text-slate-600 font-medium">
                 Tap anywhere on the screen to begin verification
               </p>
             </div>
 
             {/* 3 Prominent Feature Cards */}
-            <div className="grid grid-cols-3 gap-3 sm:gap-6 w-full max-w-3xl">
-              <div className="p-4 sm:p-6 rounded-2xl bg-white/90 backdrop-blur-xl border border-slate-200/90 shadow-sm flex flex-col items-center text-center">
-                <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center mb-3">
+            <div className="grid grid-cols-3 gap-1.5 sm:gap-6 w-full max-w-3xl">
+              <div className="p-2 sm:p-6 rounded-2xl bg-white/90 backdrop-blur-xl border border-slate-200/90 shadow-sm flex flex-col items-center text-center">
+                <div className="mb-1.5 flex h-8 w-8 items-center justify-center rounded-lg border border-blue-100 bg-blue-50 sm:mb-3 sm:h-14 sm:w-14 sm:rounded-xl">
                   <UserCheck className="w-6 h-6 sm:w-7 sm:h-7 text-blue-600" />
                 </div>
-                <span className="text-sm sm:text-base font-black text-slate-900">
+                <span className="text-[10px] leading-tight sm:text-base font-black text-slate-900">
                   Face Biometrics
                 </span>
-                <span className="text-xs sm:text-sm text-slate-500 font-medium mt-0.5">
+                <span className="hidden sm:block text-xs sm:text-sm text-slate-500 font-medium mt-0.5">
                   Sub-second 3D match
                 </span>
               </div>
-              <div className="p-4 sm:p-6 rounded-2xl bg-white/90 backdrop-blur-xl border border-slate-200/90 shadow-sm flex flex-col items-center text-center">
-                <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-xl bg-indigo-50 border border-indigo-100 flex items-center justify-center mb-3">
+              <div className="p-2 sm:p-6 rounded-2xl bg-white/90 backdrop-blur-xl border border-slate-200/90 shadow-sm flex flex-col items-center text-center">
+                <div className="mb-1.5 flex h-8 w-8 items-center justify-center rounded-lg border border-indigo-100 bg-indigo-50 sm:mb-3 sm:h-14 sm:w-14 sm:rounded-xl">
                   <Ticket className="w-6 h-6 sm:w-7 sm:h-7 text-indigo-600" />
                 </div>
-                <span className="text-sm sm:text-base font-black text-slate-900">
+                <span className="text-[10px] leading-tight sm:text-base font-black text-slate-900">
                   Guest Pass & Policy
                 </span>
-                <span className="text-xs sm:text-sm text-slate-500 font-medium mt-0.5">
+                <span className="hidden sm:block text-xs sm:text-sm text-slate-500 font-medium mt-0.5">
                   Pass expiry + lockdown
                 </span>
               </div>
-              <div className="p-4 sm:p-6 rounded-2xl bg-white/90 backdrop-blur-xl border border-slate-200/90 shadow-sm flex flex-col items-center text-center">
-                <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-xl bg-emerald-50 border border-emerald-100 flex items-center justify-center mb-3">
+              <div className="p-2 sm:p-6 rounded-2xl bg-white/90 backdrop-blur-xl border border-slate-200/90 shadow-sm flex flex-col items-center text-center">
+                <div className="mb-1.5 flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-100 bg-emerald-50 sm:mb-3 sm:h-14 sm:w-14 sm:rounded-xl">
                   <ShieldCheck className="w-6 h-6 sm:w-7 sm:h-7 text-emerald-600" />
                 </div>
-                <span className="text-sm sm:text-base font-black text-slate-900">
+                <span className="text-[10px] leading-tight sm:text-base font-black text-slate-900">
                   Auto Turnstile
                 </span>
-                <span className="text-xs sm:text-sm text-slate-500 font-medium mt-0.5">
+                <span className="hidden sm:block text-xs sm:text-sm text-slate-500 font-medium mt-0.5">
                   Instant gate clearance
                 </span>
               </div>
@@ -2402,7 +2751,7 @@ if (!identityConfirmed(confirmRef.current, margin)) {
       </div>
 
       {cameraDown && (
-        <div className="absolute left-4 sm:left-10 z-40 glass-pill pl-3 pr-4 py-2.5 flex items-center gap-2 bg-amber-50/95 border-amber-200 shadow-sm" style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}>
+        <div className="absolute left-4 sm:left-10 z-40 glass-pill pl-3 pr-4 py-2.5 flex items-center gap-2 bg-amber-50/95 border-amber-200 shadow-sm" style={{ top: "max(5.5rem, calc(env(safe-area-inset-top) + 4.5rem))" }}>
           <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
           <span className="text-[11px] sm:text-xs font-bold text-amber-800 uppercase tracking-wider">
             Camera offline — hardware test mode
@@ -2600,146 +2949,117 @@ if (!identityConfirmed(confirmRef.current, margin)) {
       )}
 
       {/* ─── Bottom Status Panel (Centered, High Legibility) ────── */}
-      {/* ─── Live scan rail — left edge, vertically centred ───
-          Placement is the point here, not decoration. The face occupies the
-          centre column and the uniform the lower centre, so a bottom-centre
-          banner was covering the exact regions the student wants to see and the
-          dress-code model needs to read. The side band is the one strip nobody
-          ever stands in, and stacking the steps top-to-bottom matches the order
-          they actually resolve in. */}
-      {(kioskState === "ready" || kioskState === "scanning") && (
-        <div className="absolute left-4 sm:left-8 top-1/2 -translate-y-1/2 z-30 pointer-events-none flex flex-col items-start gap-1.5 w-[13rem] max-w-[42vw]">
-          <ScanStepPill label="Face" state={pipeline?.face ?? "working"} />
-          <ScanStepPill label="Identity" state={pipeline?.identity ?? "idle"} />
-          <PolicyReadout scanStep={scanStep} holdNotice={holdNotice} />
-
-          {/* Each line hugs its own text — no panel, no border, no shared box.
-              The backdrop exists only so the words stay readable on camera. */}
-          <p className="mt-1.5 max-w-full rounded-lg bg-white/90 backdrop-blur-md px-2.5 py-1 text-surface-900 font-black tracking-wide text-[13px] leading-snug shadow-sm">
-            {pipeline?.title ?? "Step in front of camera"}
-          </p>
-          <p className="max-w-full rounded-lg bg-white/85 backdrop-blur-sm px-2.5 py-1 text-[11px] text-surface-700 font-semibold leading-snug shadow-sm">
-            {pipeline?.hint ?? "Face + guest pass verification active"}
-          </p>
-        </div>
+      {/* Centre separator — two terminals in one screen. */}
+      {!compact && (
+        <div
+          aria-hidden
+          className="absolute left-1/2 top-0 bottom-0 -translate-x-1/2 z-20 w-1.5 sm:w-2 bg-black/85 shadow-[0_0_28px_rgba(0,0,0,0.6)] pointer-events-none"
+        />
       )}
 
-      <div className="absolute left-4 right-4 sm:left-10 sm:right-10 flex items-end justify-center z-30 pointer-events-none" style={{ bottom: "max(1.5rem, env(safe-area-inset-bottom))" }}>
-        <div className="w-full max-w-2xl flex justify-center pointer-events-auto">
-          {kioskState === "granted" && verdict ? (
-            <div className="glass-card p-5 sm:p-8 w-full shadow-2xl border-2 border-emerald-500/50 bg-white/95 animate-in fade-in zoom-in-95 duration-200">
-              <div className="flex items-center gap-5">
-                <div className="w-16 h-16 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-center justify-center shrink-0 shadow-sm">
-                  <CheckCircle2 className="w-10 h-10 text-emerald-600" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2.5">
-                    <span className="px-2.5 py-1 rounded-md text-xs font-black tracking-widest bg-emerald-100 text-emerald-800 uppercase">
-                      Access Granted
-                    </span>
-                    <span className="text-sm text-emerald-700 font-mono font-bold">
-                      {Math.round((verdict.confidence ?? 0.9) * 100)}% Match
-                    </span>
-                  </div>
-                  <h2 className="text-2xl sm:text-3xl font-black text-surface-900 tracking-tight truncate mt-1">
-                    {verdict.person.name}
-                  </h2>
-                  <p className="text-xs sm:text-sm text-surface-500 font-medium">
-                    ID: {verdict.person.student_id || verdict.person.id.slice(0, 8)}
-                    {verdict.person.department && ` • ${verdict.person.department}`}
-                  </p>
-                </div>
-              </div>
-              {isDecisionGateBanner(gateState) && (
-                <div
-                  className={`mt-3.5 flex items-center justify-between gap-3 text-sm sm:text-base font-black border rounded-2xl px-4 py-3 ${
-                    gateState === "OPEN"
-                      ? "text-emerald-800 bg-emerald-50 border-emerald-200"
-                      : gateState === "AWAITING"
-                        ? "text-amber-800 bg-amber-50 border-amber-200"
-                        : "text-surface-700 bg-surface-100 border-surface-200"
-                  }`}
-                >
-                  <span className="flex items-center gap-3 min-w-0">
-                    <span
-                      className={`w-2.5 h-2.5 shrink-0 rounded-full ${
-                        gateState === "OPEN" ? "bg-emerald-500 animate-ping" : "bg-amber-500"
-                      }`}
-                    />
-                    <span className="truncate">
-                      {gateState === "OPEN"
-                        ? "Turnstile Barrier OPEN — please proceed"
-                        : gateState === "AWAITING"
-                          ? "Gate command sent — awaiting controller confirmation"
-                          : "Gate command sent — no controller linked"}
-                    </span>
-                  </span>
-                  <span className="flex items-center gap-2 shrink-0">
-                    {gateSecondsLeft !== null && gateSecondsLeft > 0 && (
-                      <span className="font-mono text-xs opacity-80">{gateSecondsLeft}s</span>
-                    )}
-                    {gateState === "SENT" && (
-                      <span className="px-2 py-0.5 rounded-md text-[10px] font-black tracking-widest bg-surface-200 text-surface-600">
-                        DEMO
-                      </span>
-                    )}
-                  </span>
-                </div>
-              )}
-            </div>
-          ) : kioskState === "denied" ? (
-            <div className="glass-card p-5 sm:p-8 w-full shadow-2xl border-2 border-rose-300 bg-white/95">
-              <div className="flex items-center gap-5">
-                <div className="w-16 h-16 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center shrink-0">
-                  <XCircle className="w-10 h-10 text-rose-600" />
-                </div>
-                <div>
-                  <p className="text-rose-600 font-black text-2xl sm:text-3xl tracking-tight">
-                    ACCESS DENIED
-                  </p>
-                  <p className="text-surface-700 font-semibold text-sm sm:text-base mt-1">
-                    {holdNotice?.detail ?? statusMessage ?? "Verification failed"}
-                  </p>
+      {/* One panel per oval, on its own side. Nothing sits in the middle, so the
+          two students never read each other's result and neither panel can cover
+          the other's oval. */}
+      {(kioskState === "ready" ||
+        kioskState === "scanning" ||
+        kioskState === "granted" ||
+        kioskState === "denied") && (
+        <div
+          className={`absolute inset-x-0 z-30 pointer-events-none grid ${
+            compact ? "grid-cols-1" : "grid-cols-2"
+          } gap-2 sm:gap-6 px-3 sm:px-8`}
+          style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}
+        >
+          {(compact ? [0] : [0, 1]).map((slot) => {
+            const phase = slotPhases[slot];
+            const detail = slotDetails[slot];
+            const card = slotCardsRef.current[slot];
+            const tone =
+              phase === "granted" || phase === "confirmed"
+                ? "border-emerald-400/70 bg-emerald-50/95 text-emerald-900"
+                : phase === "unknown"
+                  ? "border-amber-400/80 bg-amber-50/95 text-amber-900"
+                  : phase === "denied"
+                    ? "border-rose-400/80 bg-rose-50/95 text-rose-900"
+                    : "border-white/50 bg-white/85 text-surface-700";
+            const title =
+              phase === "granted"
+                ? "WELCOME"
+                : phase === "confirmed"
+                  ? "IDENTITY VERIFIED"
+                  : phase === "unknown"
+                    ? "UNKNOWN FACE"
+                    : phase === "denied"
+                      ? "ACCESS DENIED"
+                      : phase === "verifying"
+                        ? "VERIFYING"
+                        : compact
+                          ? "STUDENT"
+                          : "STUDENT " + (slot + 1);
+
+            return (
+              <div key={slot} className="flex min-w-0 flex-col items-stretch gap-1">
+                <span className="self-center text-[10px] font-black tracking-[0.22em] text-white/85 drop-shadow-[0_1px_3px_rgba(0,0,0,0.8)]">
+                  {compact ? "STAND HERE" : `STUDENT ${slot + 1}`}
+                </span>
+                <div className={`rounded-2xl border-2 px-3 py-2.5 sm:px-4 sm:py-3 shadow-xl backdrop-blur-md ${tone}`}>
+                  <p className="text-[11px] sm:text-xs font-black tracking-widest">{title}</p>
+                  {(phase === "confirmed" || phase === "granted") && card ? (
+                    <>
+                      <p className="text-base sm:text-xl font-black tracking-tight truncate leading-tight">
+                        {card.name}
+                      </p>
+                      <p className="text-[11px] sm:text-xs font-semibold opacity-80 truncate">
+                        {card.department || "Student"}
+                        {card.confidence > 0 && ` · ${Math.round(card.confidence * 100)}%`}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-[11px] sm:text-sm font-semibold opacity-80 leading-snug">
+                      {phase === "unknown"
+                        ? `${detail} — see the guard station`
+                        : phase === "denied"
+                          ? detail || "See the guard station"
+                          : phase === "verifying"
+                            ? "Hold still — reading your face"
+                            : "Step into this oval"}
+                    </p>
+                  )}
                 </div>
               </div>
-            </div>
-          ) : unknownNotice &&
-            (kioskState === "ready" || kioskState === "scanning") &&
-            !holdNotice ? (
-            <div className="glass-card p-5 sm:p-8 w-full shadow-2xl border-2 border-amber-300 bg-white/95 animate-in fade-in zoom-in-95 duration-200">
-              <div className="flex items-center gap-5">
-                <div className="w-16 h-16 rounded-2xl bg-amber-50 border border-amber-200 flex items-center justify-center shrink-0">
-                  <UserCheck className="w-10 h-10 text-amber-600" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-amber-700 font-black text-2xl sm:text-3xl tracking-tight">
-                    UNKNOWN FACE
-                  </p>
-                  <p className="text-surface-700 font-semibold text-sm sm:text-base mt-1">
-                    Not enrolled — please see the guard station
-                  </p>
-                  <p className="text-xs font-mono text-surface-500 font-bold mt-1">
-                    Closest profile {Math.max(0, Math.round(unknownNotice.score * 100))}% · needs{" "}
-                    {Math.round(settingsRef.current.matchThreshold * 100)}% to open the gate
-                  </p>
-                </div>
-              </div>
-            </div>
-          ) : null}
+            );
+          })}
         </div>
-      </div>
+      )}
 
       {/* ─── Last result strip ───────────────────────────── */}
       {/* The verdict card clears after a few seconds, which left the screen with
           no trace of what just happened. This keeps the latest decision visible
           while the student walks on, then clears itself. */}
+      {/* School-ID QR status — accepted as the fallback when the face fails */}
+      {allowQr && kioskState !== "error" && (
+        <div
+          className="absolute right-3 sm:right-10 z-30 pointer-events-none flex items-center gap-2 rounded-lg bg-white/90 backdrop-blur-md px-3 py-1.5 shadow-sm border border-white/40"
+          style={{
+            top: compact
+              ? "max(9rem, calc(env(safe-area-inset-top) + 8rem))"
+              : "max(5.5rem, calc(env(safe-area-inset-top) + 4.5rem))",
+          }}
+        >
+          <span className="text-[10px] font-black tracking-widest text-surface-500 uppercase">School ID</span>
+          <span className={`text-[11px] font-mono font-bold ${qrSeen ? "text-emerald-700" : "text-amber-700"}`}>
+            {qrSeen ? qrSeen.studentId : "SCAN QR"}
+          </span>
+        </div>
+      )}
+
       {lastDecision &&
       !holdNotice &&
       !unknownNotice &&
       kioskState !== "granted" &&
       kioskState !== "denied" &&
       !(lastMatch?.matched && lastMatch.person && lastMatch.person.id !== lastDecision.personId) && (
-        <div className="absolute left-4 sm:left-10 z-30 pointer-events-none flex items-center gap-2 rounded-lg bg-white/90 backdrop-blur-md px-3 py-1.5 shadow-sm border border-white/40" style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}>
+        <div className="absolute left-4 sm:left-10 z-30 pointer-events-none flex items-center gap-2 rounded-lg bg-white/90 backdrop-blur-md px-3 py-1.5 shadow-sm border border-white/40" style={{ bottom: "max(7rem, calc(env(safe-area-inset-bottom) + 6rem))" }}>
           <span className="text-[10px] font-black tracking-widest text-surface-500 uppercase">
             Last
           </span>
