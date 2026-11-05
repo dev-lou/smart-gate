@@ -562,7 +562,7 @@ export default function KioskPage() {
     /** School-ID QR: accepted as the fallback when the face is not recognised. */
     allowQr: boolean;
   }>({
-    matchThreshold: 0.7,
+    matchThreshold: 0.58,
     gateOpenDuration: 5,
     lockdownMode: false,
     lockdownReason: "",

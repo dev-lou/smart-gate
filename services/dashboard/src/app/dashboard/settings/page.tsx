@@ -48,10 +48,10 @@ const SETTING_META: Record<
     label: "Face Match Threshold",
     type: "number",
     description:
-      "Minimum cosine similarity (0-1) the kiosk needs before it accepts a face. Higher = stricter (fewer false accepts, more false rejects); lower = more permissive. 0.7 is the recommended default — the kiosk additionally requires 5 consecutive matching reads (~2.5s of holding still) plus a clear margin over the next-closest profile, so a stranger is shown as Unknown instead of a wrong name.",
-    min: 0.65,
+      "Minimum cosine similarity (0-1) the kiosk needs before it accepts a face. Higher = stricter (fewer false accepts, more false rejects); lower = more permissive. 0.58 is the default for this camera — the kiosk additionally requires a 3-second averaged read window plus a clear margin over the next-closest profile, so a stranger is shown as Unknown instead of a wrong name.",
+    min: 0.45,
     max: 0.9,
-    step: 0.05,
+    step: 0.01,
   },
   allow_qr_entry: {
     label: "Accept School-ID QR",

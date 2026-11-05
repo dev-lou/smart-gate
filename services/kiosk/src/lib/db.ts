@@ -305,7 +305,7 @@ export async function getSyncSettings(): Promise<{
       ? rawName
       : "Iloilo State University of Fisheries Science and Technology";
   const schoolInitials = (await getSetting("school_initials")) ?? "ISUFST";
-  const threshold = parseFloat((await getSetting("face_recognition_threshold")) ?? "0.7");
+  const threshold = parseFloat((await getSetting("face_recognition_threshold")) ?? "0.58");
   return { schoolName, schoolInitials, matchThreshold: threshold };
 }
 

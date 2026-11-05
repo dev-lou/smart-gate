@@ -52,9 +52,18 @@ export interface MatchResult {
 
 import { sendToWorker } from "./workerManager";
 
-const MATCH_THRESHOLD = 0.7; // Cosine similarity threshold (strict: strangers stay unknown)
+/**
+ * Default cosine similarity for a match.
+ *
+ * Measured on this stack, the SAME student settles around 0.63 while a stranger
+ * stays near 0.3-0.4, so a 0.7 default sat ABOVE the true score: the right
+ * student failed nearly every frame and was shown as an unknown visitor, passing
+ * only on an occasional lucky frame. 0.58 clears the true score with room for
+ * lighting changes, and AMBIGUOUS_GAP still keeps lookalikes apart.
+ */
+const MATCH_THRESHOLD = 0.58;
 /** Nothing below this is trusted, whatever the dashboard setting says. */
-export const MIN_MATCH_THRESHOLD = 0.65;
+export const MIN_MATCH_THRESHOLD = 0.5;
 /** Winner must beat the runner-up by this much before a name is shown. */
 const AMBIGUOUS_GAP = 0.08;
 const MODEL_BASE_URL = "https://storage.googleapis.com/mediapipe-models";

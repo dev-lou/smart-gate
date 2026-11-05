@@ -92,15 +92,23 @@ export function shouldClearStaleScan(args: { faceFreeSince: number; now: number;
   return args.now - args.faceFreeSince >= (args.ms ?? UNKNOWN_ABSENCE_CLEAR_MS);
 }
 
-/** Per-person repeat suppression: a decision for the same person inside this
- *  window is still shown on screen, but writes no second access row. */
-export const PERSON_COOLDOWN_MS = 60_000;
+/**
+ * Per-person repeat suppression: a decision for the same person inside this
+ * window is still shown on screen, but writes no second access row.
+ *
+ * One minute was longer than the visit: a student who stepped out and came back
+ * was told "already recorded" and the gate never opened for them again. Eight
+ * seconds still covers a shoelace-stop, while a genuine second pass is a second
+ * entry and is logged as one. The anti-flood guard that actually matters is
+ * shouldDecide(), which allows one decision per stay whatever this says.
+ */
+export const PERSON_COOLDOWN_MS = 8_000;
 
 /** How long a just-decided person is not re-decided at all, even standing
  *  perfectly still — far shorter than the log-suppression window, and only
  *  ever applied to the person who was just decided. Everyone else (a new
  *  arrival stepping in front of the camera) is decided immediately. */
-export const PERSON_REDECIDE_MS = 4_000;
+export const PERSON_REDECIDE_MS = 2_500;
 
 /**
  * Face matching window \u2014 how the kiosk decides WHICH student is standing there.
