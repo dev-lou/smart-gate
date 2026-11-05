@@ -61,6 +61,7 @@ import {
   nextPresence,
   resolveGateOutcome,
   shouldDecide,
+  shouldAnnounceWelcome,
   type FaceWindow,
 } from "@/lib/scanPolicy";
 import {
@@ -745,6 +746,14 @@ export default function KioskPage() {
   }
 
   /**
+   * Who was last greeted out loud, and when. The welcome belongs to an
+   * ARRIVAL, not to an access row: a student whose decision is suppressed
+   * (already recorded, or read again before the gate re-arms) was greeted
+   * with silence, which is the complaint this state exists to fix.
+   */
+  const welcomeRef = useRef<{ id: string; at: number }>({ id: "", at: 0 });
+
+  /**
    * Take the result card down once its readable window has elapsed.
    *
    * The stale-scan reset only clears a card when the oval goes EMPTY, and a
@@ -1052,6 +1061,9 @@ export default function KioskPage() {
           setConfirmed(null);
         }
         setUnknownNotice(null);
+        // The visitor walked on: the next face in this oval is a new arrival
+        // and earns its own welcome.
+        welcomeRef.current = { id: "", at: 0 };
         // ...but never the card that is still inside its guaranteed hold:
         // "the oval is empty" is the normal state of a QR entry, not proof
         // that the student has walked away from their receipt.
@@ -1485,6 +1497,20 @@ export default function KioskPage() {
       confirmedRef.current = c;
       setConfirmed(c);
     }
+    // ─── Welcome, every single arrival ─────────────────
+    // Said here — on recognition — and not in the grant branch below, because
+    // the decision gate deliberately suppresses repeat rows: a student recorded
+    // a moment ago, or one read again before the gate re-armed, still walked up
+    // and should still be greeted. Throttled per person so one visit isn't
+    // greeted on every frame.
+    if (match.person) {
+      const greetedAt = Date.now();
+      if (shouldAnnounceWelcome(welcomeRef.current, match.person.id, greetedAt)) {
+        welcomeRef.current = { id: match.person.id, at: greetedAt };
+        playCue("grant");
+      }
+    }
+
     // No card here: a name belongs to a DECISION, not to a read. Writing one at
     // this point made a standing student's name reappear every time their window
     // closed, never expire while they stayed, and shadow whoever came next. The
@@ -1559,7 +1585,8 @@ export default function KioskPage() {
       // decision can land while this card's hold window is still running).
       const cardToken = ++decisionSeqRef.current;
       setKioskState("granted");
-      playCue("grant");
+      // No cue here: the recognition path above already greeted this arrival,
+      // and a second play would cut the recording off and start it over.
       setStatusMessage(`Welcome, ${match.person!.name}!`);
       // Freeze the card identity: recognition keeps overwriting lastMatch
       // while the card is up, so the card reads from this snapshot and the

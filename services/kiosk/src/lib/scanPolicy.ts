@@ -33,6 +33,32 @@ export function resultCardHolding(cardHoldUntil: number, now: number): boolean {
   return now < cardHoldUntil;
 }
 
+/**
+ * How long before the same person standing still is greeted a second time.
+ * Long on purpose: a student who has walked up and been read is ONE arrival,
+ * and repeating the welcome while they stand there would talk over itself.
+ */
+export const WELCOME_REPEAT_MS = 30_000;
+
+/**
+ * Should the kiosk greet this arrival out loud?
+ *
+ * The welcome used to be bound to a GRANT, so it only played when a full
+ * decision ran — a student already recorded inside the one-minute window, or
+ * one read again before the decision gate re-armed, arrived in silence. Every
+ * recognised arrival gets its welcome; the only guard is against repeating it
+ * for the same person who has not moved.
+ */
+export function shouldAnnounceWelcome(
+  last: { id: string; at: number } | null | undefined,
+  id: string,
+  now: number,
+  repeatMs = WELCOME_REPEAT_MS,
+): boolean {
+  if (!last || last.id !== id) return true;
+  return now - last.at >= repeatMs;
+}
+
 /** How long the small "last result" strip lingers once the card clears. */
 export const LAST_RESULT_HOLD_MS = 30_000;
 
