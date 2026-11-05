@@ -744,6 +744,24 @@ export default function KioskPage() {
     });
   }
 
+  /**
+   * Take the result card down once its readable window has elapsed.
+   *
+   * The stale-scan reset only clears a card when the oval goes EMPTY, and a
+   * student who just presented their face stands there afterwards — so the card
+   * used to stay for as long as they did and the next student kept reading the
+   * previous name. The decision token keeps a newer card safe from an older
+   * timer.
+   */
+  function scheduleCardRetire(slot: number, token: number) {
+    setTimeout(() => {
+      if (decisionSeqRef.current !== token) return;
+      if (resultCardHolding(cardHoldUntilRef.current, Date.now())) return;
+      slotCardsRef.current[slot] = null;
+      setSlotPhaseAt(slot, "empty");
+    }, RESULT_CARD_MIN_HOLD_MS);
+  }
+
   // ─── Initialization ─────────────────────────────────────
 
   useEffect(() => {
@@ -1206,6 +1224,8 @@ export default function KioskPage() {
       rememberDecision(outcome.studentId, personId, false);
       setSlotPhaseAt(slot, "denied", detail);
       cardHoldUntilRef.current = Date.now() + RESULT_CARD_MIN_HOLD_MS;
+      faceWindowRef.current[slot] = { ...EMPTY_FACE_WINDOW };
+      scheduleCardRetire(slot, decisionSeqRef.current);
       await addLog({
         person_id: null,
         person_name: outcome.studentId,
@@ -1276,6 +1296,10 @@ export default function KioskPage() {
     // Guarantee the name + course are readable for the full window: the oval is
     // empty on a QR entry, so nothing else keeps this card on screen.
     cardHoldUntilRef.current = grantedAt + RESULT_CARD_MIN_HOLD_MS;
+    // This student's evidence is spent; the next arrival starts a fresh window
+    // instead of inheriting an average that has already been decided.
+    faceWindowRef.current[slot] = { ...EMPTY_FACE_WINDOW };
+    scheduleCardRetire(slot, cardToken);
     lastDecisionByPersonRef.current.set(person.id, { at: grantedAt, granted: true });
     rememberDecision(person.name, person.id, true);
     setHoldNotice({
@@ -1424,7 +1448,9 @@ export default function KioskPage() {
     if (!faceWindowElapsed(window, sampledAt)) {
       // Still gathering: show progress, never a name — unless a result card is
       // still inside its hold, in which case that card stays exactly as it is.
-      if (!cardHoldActive) {
+      // A student who already passed keeps hearing "hold still" otherwise:
+      // their notice is live, so leave the panel neutral while it shows.
+      if (!cardHoldActive && !holdNoticeRef.current) {
         slotCardsRef.current[slot] = null;
         setSlotPhaseAt(slot, "verifying");
       }
@@ -1459,15 +1485,10 @@ export default function KioskPage() {
       confirmedRef.current = c;
       setConfirmed(c);
     }
-    if (match.person && !cardHoldActive) {
-      slotCardsRef.current[slot] = {
-        id: match.person.id,
-        name: match.person.name,
-        department: match.person.department ?? "",
-        confidence: match.confidence,
-      };
-      setSlotPhaseAt(slot, "confirmed");
-    }
+    // No card here: a name belongs to a DECISION, not to a read. Writing one at
+    // this point made a standing student's name reappear every time their window
+    // closed, never expire while they stayed, and shadow whoever came next. The
+    // grant branch below is the only place the card is written.
 
     // ─── Per-identity decision gate ─────────────────────
     // Recognition always runs (the HUD and identity phase above track whoever
@@ -1549,6 +1570,13 @@ export default function KioskPage() {
         isGuest: isGuestMatch,
       });
       setSlotPhaseAt(slot, "granted");
+      // Name + course for the card, taken from the identity that was decided.
+      slotCardsRef.current[slot] = {
+        id: match.person!.id,
+        name: match.person!.name,
+        department: match.person!.department ?? "",
+        confidence: match.confidence,
+      };
 
       // Open gate (Wi-Fi ESP32 or USB Arduino)
       // 🔴 FIX BUG #1: Use ref for gate state check
@@ -1589,6 +1617,10 @@ export default function KioskPage() {
       // Same guarantee as a QR entry: the student often steps back as the gate
       // opens, and the card must survive that for a readable beat.
       cardHoldUntilRef.current = grantedAt + RESULT_CARD_MIN_HOLD_MS;
+      // The card comes down on its own after the hold, even though this student
+      // is still standing there; their samples must not decide the next one.
+      faceWindowRef.current[slot] = { ...EMPTY_FACE_WINDOW };
+      scheduleCardRetire(slot, cardToken);
       const isRepeatGrant = isRepeatDecision({
         lastDecisionAt: lastDecisionByPersonRef.current.get(match.person!.id)?.at ?? 0,
         now: grantedAt,
@@ -1676,6 +1708,8 @@ export default function KioskPage() {
       });
       setSlotPhaseAt(slot, "denied", detail);
       cardHoldUntilRef.current = Date.now() + RESULT_CARD_MIN_HOLD_MS;
+      faceWindowRef.current[slot] = { ...EMPTY_FACE_WINDOW };
+      scheduleCardRetire(slot, cardToken);
 
       // Same duplicate guard as a grant: a denial must not be
       // re-logged every few seconds while the student stands there. The
