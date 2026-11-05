@@ -746,6 +746,14 @@ export default function KioskPage() {
   }
 
   /**
+   * Set once the stale-scan reset has run for this absence. The reset writes
+   * React state, and `shouldClearStaleScan` stays true for as long as the gate
+   * is empty — re-running it every frame re-rendered the whole kiosk at frame
+   * rate whenever nobody was standing there.
+   */
+  const staleClearedRef = useRef(false);
+
+  /**
    * Who was last greeted out loud, and when. The welcome belongs to an
    * ARRIVAL, not to an access row: a student whose decision is suppressed
    * (already recorded, or read again before the gate re-arms) was greeted
@@ -1044,6 +1052,8 @@ export default function KioskPage() {
       });
       faceFreeSinceRef.current = presence.faceFreeSince;
       frameClearedRef.current = presence.rearmed;
+      // Somebody is here: the next absence earns a fresh reset.
+      if (detected.length > 0) staleClearedRef.current = false;
 
       // ─── Stale-scan reset ─────────────────────────────
       // The frame has been truly empty for a beat: whoever was standing here
@@ -1051,10 +1061,17 @@ export default function KioskPage() {
       // half-built confirmation, and restart the unknown dwell clock — the
       // next arrival must be read as someone new, never inherit the last
       // visitor's verdict-in-progress.
-      if (shouldClearStaleScan({ faceFreeSince: faceFreeSinceRef.current, now: Date.now() })) {
+      // Once per absence, not once per frame — see staleClearedRef.
+      if (
+        shouldClearStaleScan({ faceFreeSince: faceFreeSinceRef.current, now: Date.now() }) &&
+        !staleClearedRef.current
+      ) {
+        staleClearedRef.current = true;
         unknownSinceRef.current = 0;
         faceWindowRef.current = [{ ...EMPTY_FACE_WINDOW }, { ...EMPTY_FACE_WINDOW }];
-        qrSlotsRef.current = [null, null];
+        // The QR signal is NOT cleared here: a student presents a code with
+        // nobody in the oval, so "the oval is empty" says nothing about their
+        // ID. It expires on its own freshness window (QR_FRESH_MS) instead.
         setConfirmProgress(0);
         if (confirmedRef.current) {
           confirmedRef.current = null;
@@ -1201,6 +1218,17 @@ export default function KioskPage() {
     const signal = qrSlotsRef.current[slot];
     if (!signal || qrHandledAtRef.current[slot] >= signal.seenAt) return;
 
+    // An empty roster is not a verdict. Before the first sync the list is empty,
+    // and evaluating against it denied every real student as "not enrolled" and
+    // wrote a failure row. Reload once, then say honestly that it is not ready.
+    if (qrRosterRef.current.length === 0) {
+      await updateEnrollmentHealth().catch(() => {});
+      if (qrRosterRef.current.length === 0) {
+        setStatusMessage("Student list still syncing - try your ID again in a moment");
+        return;
+      }
+    }
+
     const outcome = evaluateScannedQr({
       allowQr: settingsRef.current.allowQr,
       qr: signal,
@@ -1266,6 +1294,61 @@ export default function KioskPage() {
       (s) => normalizeStudentId(s.student_id) === normalizeStudentId(outcome.studentId),
     );
     if (!person) return;
+
+    // Lockdown outranks every entry method. The camera path denies it, so the
+    // school ID must not be the side door that opens the gate during one.
+    if (settingsRef.current.lockdownMode) {
+      const detail = settingsRef.current.lockdownReason
+        ? `Campus lockdown - ${settingsRef.current.lockdownReason}`
+        : "Campus lockdown - see guard";
+      const lockedPrev = lastDecisionByPersonRef.current.get(person.id);
+      if (lockedPrev && isRepeatDecision({ lastDecisionAt: lockedPrev.at, now: Date.now() })) return;
+      lastDecisionByPersonRef.current.set(person.id, { at: Date.now(), granted: false });
+      const lockedToken = ++decisionSeqRef.current;
+      setKioskState("denied");
+      playCue("deny");
+      setStatusMessage(detail);
+      slotCardsRef.current[slot] = {
+        id: person.id,
+        name: person.name,
+        department: person.department ?? "",
+        confidence: 0,
+      };
+      setSlotPhaseAt(slot, "denied", detail);
+      setHoldNotice({
+        kind: "denied",
+        name: person.name,
+        at: Date.now(),
+        personId: person.id,
+        detail,
+      });
+      rememberDecision(person.name, person.id, false);
+      cardHoldUntilRef.current = Date.now() + RESULT_CARD_MIN_HOLD_MS;
+      scheduleCardRetire(slot, lockedToken);
+      await addLog({
+        person_id: person.id,
+        person_name: person.name,
+        person_type: "student",
+        direction: "entry",
+        method: "qr",
+        success: false,
+        confidence: 0,
+        failure_reason: detail,
+        reason_code: "LOCKDOWN_ACTIVE",
+        decision_note: `${detail} - school ID QR`,
+        client_id: "kiosk-01",
+        gate_state: "closed",
+        device_timestamp: new Date().toISOString(),
+      }).catch((err) => console.warn("[Kiosk] Log write failed:", err));
+      refreshStats();
+      setTimeout(() => {
+        if (decisionSeqRef.current !== lockedToken) return;
+        setKioskState("ready");
+        setStatusMessage("Ready");
+        setScanStep("searching");
+      }, VERDICT_HOLD_MS);
+      return;
+    }
 
     const prev = lastDecisionByPersonRef.current.get(person.id);
     if (prev?.granted && isRepeatDecision({ lastDecisionAt: prev.at, now: Date.now() })) {

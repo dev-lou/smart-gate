@@ -80,14 +80,24 @@ export function stretchContrast(image: { data: Uint8ClampedArray }): boolean {
  * `from`/`to` are fractions of the width (0-1); the default slice is the whole
  * frame, which is the only region the single-oval kiosk reads.
  */
-export function decodeQrTextInRegion(source: HTMLCanvasElement, from = 0, to = 1): string | null {
+export function decodeQrTextInRegion(
+  source: HTMLCanvasElement,
+  from = 0,
+  to = 1,
+  top = 0,
+  bottom = 1,
+  zoom = true,
+): string | null {
   const canvas = scratchCanvas();
   if (!canvas || source.width === 0 || source.height === 0) return null;
 
   const fromX = Math.max(0, Math.min(1, from));
   const toX = Math.max(fromX, Math.min(1, to));
+  const fromY = Math.max(0, Math.min(1, top));
+  const toY = Math.max(fromY, Math.min(1, bottom));
   const sliceWidth = Math.round(source.width * (toX - fromX));
-  if (sliceWidth < 8) return null;
+  const sliceHeight = Math.round(source.height * (toY - fromY));
+  if (sliceWidth < 8 || sliceHeight < 8) return null;
 
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return null;
@@ -96,15 +106,15 @@ export function decodeQrTextInRegion(source: HTMLCanvasElement, from = 0, to = 1
   const grab = (targetWidth: number): { image: ImageData; width: number; height: number } => {
     const scale = Math.min(1, targetWidth / sliceWidth);
     const width = Math.max(1, Math.round(sliceWidth * scale));
-    const height = Math.max(1, Math.round(source.height * scale));
+    const height = Math.max(1, Math.round(sliceHeight * scale));
     canvas.width = width;
     canvas.height = height;
     ctx.drawImage(
       source,
       Math.round(source.width * fromX),
-      0,
+      Math.round(source.height * fromY),
       sliceWidth,
-      source.height,
+      sliceHeight,
       0,
       0,
       width,
@@ -146,8 +156,22 @@ export function decodeQrTextInRegion(source: HTMLCanvasElement, from = 0, to = 1
 
   // 3 — dim or glarey: more pixels, full tonal range, both polarities.
   const second = grab(LAST_PASS_WIDTH);
-  if (!stretchContrast(second.image)) return null;
-  return decode(second.image, second.width, second.height, "attemptBoth");
+  if (stretchContrast(second.image)) {
+    const stretched = decode(second.image, second.width, second.height, "attemptBoth");
+    if (stretched) return stretched;
+  }
+
+  // 4 — zoom. A student holds the ID up in the middle of the frame, and at
+  // 480-640 px across a 1280 px frame a code at arm's length lands under ~2 px
+  // per module, which is where jsQR starts dropping it. Reading the centre 60%
+  // puts roughly 1.7x more pixels on the code for the cost of one extra pass,
+  // and only after the cheap passes found nothing.
+  if (zoom) {
+    const centred = decodeQrTextInRegion(source, 0.2, 0.8, 0.2, 0.8, false);
+    if (centred) return centred;
+  }
+
+  return null;
 }
 
 /** Whole-frame decode. */
