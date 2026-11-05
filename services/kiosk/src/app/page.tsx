@@ -1341,6 +1341,13 @@ export default function KioskPage() {
     const embedding = await getFaceEmbedding(video, face.bbox, canvas);
     if (!embedding) return;
 
+    // A result card inside its guaranteed hold OWNS the panel. Lowering the ID
+    // puts the student's own face — or a moving arm — into the oval, and this
+    // path used to repaint the slot as "verifying" / "unknown" the instant that
+    // happened, blanking the name they were still reading. Recognition keeps
+    // running; it just may not touch the card until the hold elapses.
+    const cardHoldActive = resultCardHolding(cardHoldUntilRef.current, Date.now());
+
     // Match against enrolled faces
     let match = matchFace(embedding, enrolledRef.current, settingsRef.current.matchThreshold);
     lastMatchRef.current = match;
@@ -1367,14 +1374,14 @@ export default function KioskPage() {
     // Publish the phase for the on-screen pipeline: identity is resolved, so
     // either we are verifying the decision or this face is unknown.
     setScanStep(match.matched ? "verify" : settledUnknown ? "done" : "face");
-    if (settledUnknown && !match.matched) {
+    if (settledUnknown && !match.matched && !cardHoldActive) {
       setSlotPhaseAt(slot, "unknown", `${Math.max(0, Math.round(match.confidence * 100))}% closest`);
     }
 
     // ─── Unknown-visitor notice (settled, still no match) ──
     // Surfaced here — ahead of every early-return below — so a stranger always
     // gets an honest "not enrolled" card instead of silence. Never shows a name.
-    if (settledUnknown && !match.matched) {
+    if (settledUnknown && !match.matched && !cardHoldActive) {
       setUnknownNotice((prev) =>
         prev
           ? { score: match.confidence, at: prev.at }
@@ -1415,9 +1422,12 @@ export default function KioskPage() {
     );
 
     if (!faceWindowElapsed(window, sampledAt)) {
-      // Still gathering: show progress, never a name.
-      slotCardsRef.current[slot] = null;
-      setSlotPhaseAt(slot, "verifying");
+      // Still gathering: show progress, never a name — unless a result card is
+      // still inside its hold, in which case that card stays exactly as it is.
+      if (!cardHoldActive) {
+        slotCardsRef.current[slot] = null;
+        setSlotPhaseAt(slot, "verifying");
+      }
       return;
     }
 
@@ -1426,7 +1436,7 @@ export default function KioskPage() {
     if (!best || !bestPerson || best.score < settingsRef.current.matchThreshold) {
       // Three seconds of evidence and nobody cleared the bar: this is an
       // unrecognised visitor, and the unknown-dwell card owns the screen.
-      slotCardsRef.current[slot] = null;
+      if (!cardHoldActive) slotCardsRef.current[slot] = null;
       return;
     }
 
@@ -1449,7 +1459,7 @@ export default function KioskPage() {
       confirmedRef.current = c;
       setConfirmed(c);
     }
-    if (match.person) {
+    if (match.person && !cardHoldActive) {
       slotCardsRef.current[slot] = {
         id: match.person.id,
         name: match.person.name,

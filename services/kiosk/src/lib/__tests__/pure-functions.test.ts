@@ -905,6 +905,8 @@ describe("scan policy — result card minimum hold", () => {
   // had been accepted at all.
   it("guarantees five seconds of reading time", () => {
     expect(RESULT_CARD_MIN_HOLD_MS).toBe(5_000);
+    // The operator's floor: four seconds is the least they will accept.
+    expect(RESULT_CARD_MIN_HOLD_MS).toBeGreaterThanOrEqual(4_000);
     expect(resultCardHolding(RESULT_CARD_MIN_HOLD_MS, RESULT_CARD_MIN_HOLD_MS - 1)).toBe(true);
     expect(resultCardHolding(RESULT_CARD_MIN_HOLD_MS, RESULT_CARD_MIN_HOLD_MS - 4_000)).toBe(true);
   });
