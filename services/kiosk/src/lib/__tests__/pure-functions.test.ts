@@ -509,24 +509,27 @@ describe("isBenignWasmLog", () => {
 // after a decision the kiosk only re-arms once the gate area is empty.
 
 import {
-  CONFIRM_MIN_TICKS,
-  CONFIRM_WINDOW_MS,
-  MARGIN_MIN,
+  FACE_MATCH_WINDOW_MS,
   UNKNOWN_ABSENCE_CLEAR_MS,
   PERSON_COOLDOWN_MS,
   PERSON_REDECIDE_MS,
   REARM_ABSENCE_MS,
   UNKNOWN_DWELL_MS,
+  RESULT_CARD_MIN_HOLD_MS,
+  resultCardHolding,
+  EMPTY_FACE_WINDOW,
+  bestFaceInWindow,
   clampGateWindow,
-  confirmIdentity,
+  faceWindowElapsed,
   gateStateForLog,
-  identityConfirmed,
   isRepeatDecision,
   isSettledUnknown,
   nextPresence,
+  recordFaceSample,
   resolveGateOutcome,
   shouldClearStaleScan,
   shouldDecide,
+  startFaceWindow,
   visitGeneration,
 } from "../scanPolicy";
 
@@ -810,71 +813,61 @@ describe("scan policy — visit generations", () => {
   });
 });
 
-describe("scan policy — anti-false-accept confirmation", () => {
+describe("scan policy — three-second face match window", () => {
   const T0 = 1_000_000;
-  const EMPTY = { id: null, count: 0, since: 0 };
 
-  // The reported bug: a stranger steps up, one motion-blurred frame scores
-  // 0.61 for an enrolled student, and the kiosk greets them with the wrong
-  // name. A single hot frame must never be a verdict.
-  it("does not confirm on the first hot frame for a stranger", () => {
-    let state = confirmIdentity(EMPTY, "student-a", true, T0);
-    expect(identityConfirmed(state, 0.2, T0)).toBe(false);
-    state = confirmIdentity(state, "student-a", true, T0 + 500);
-    expect(identityConfirmed(state, 0.2, T0 + 500)).toBe(false);
+  // The reported bug: the right student's name arrived late or never appeared,
+  // because one flickered frame towards a lookalike restarted a consecutive-win
+  // count and threw away the samples already collected for them.
+  it("names nobody before the window closes", () => {
+    expect(FACE_MATCH_WINDOW_MS).toBe(3000);
+    let win = startFaceWindow(T0);
+    win = recordFaceSample(win, { id: "student-a", score: 0.72, at: T0 });
+    win = recordFaceSample(win, { id: "student-a", score: 0.74, at: T0 + 2000 });
+    expect(faceWindowElapsed(win, T0 + 2999)).toBe(false);
+    expect(faceWindowElapsed(win, T0 + 3000)).toBe(true);
   });
 
-  it("holds the gate for the full three-second window", () => {
-    expect(CONFIRM_WINDOW_MS).toBe(3000);
-    let state = confirmIdentity(EMPTY, "student-a", true, T0);
-    state = confirmIdentity(state, "student-a", true, T0 + 1500);
-    state = confirmIdentity(state, "student-a", true, T0 + 3000);
-    // Same wins, same margin — one millisecond early is still not a verdict.
-    expect(identityConfirmed(state, 1, T0 + 2999)).toBe(false);
-    expect(identityConfirmed(state, 1, T0 + 3000)).toBe(true);
+  it("picks the student with the best average across the window", () => {
+    let win = startFaceWindow(T0);
+    // A lookalike wins the odd frame; the right student wins most of them.
+    win = recordFaceSample(win, { id: "student-b", score: 0.7, at: T0 });
+    win = recordFaceSample(win, { id: "student-a", score: 0.68, at: T0 + 600 });
+    win = recordFaceSample(win, { id: "student-a", score: 0.76, at: T0 + 1200 });
+    win = recordFaceSample(win, { id: "student-a", score: 0.78, at: T0 + 1800 });
+    win = recordFaceSample(win, { id: "student-b", score: 0.71, at: T0 + 2400 });
+    const best = bestFaceInWindow(win);
+    expect(best?.id).toBe("student-a"); // 0.74 average beats student-b at 0.705
+    expect(best?.samples).toBe(3);
+    expect(best!.score).toBeCloseTo(0.74, 5);
   });
 
-  it("does not confirm on too few wins, even after the window", () => {
-    let state = confirmIdentity(EMPTY, "student-a", true, T0);
-    state = confirmIdentity(state, "student-a", true, T0 + 3000);
-    expect(state.count).toBe(2);
-    expect(identityConfirmed(state, 1, T0 + 5000)).toBe(false);
-    expect(CONFIRM_MIN_TICKS).toBe(3);
+  it("a flickered frame no longer restarts the window", () => {
+    let win = startFaceWindow(T0);
+    win = recordFaceSample(win, { id: "student-a", score: 0.75, at: T0 });
+    win = recordFaceSample(win, { id: "student-b", score: 0.66, at: T0 + 700 });
+    win = recordFaceSample(win, { id: "student-a", score: 0.77, at: T0 + 1400 });
+    // Still measured from the first sample, so the verdict lands on time.
+    expect(faceWindowElapsed(win, T0 + 3000)).toBe(true);
+    expect(bestFaceInWindow(win)?.id).toBe("student-a");
   });
 
-  it("a tight lookalike race below the margin stays unknown", () => {
-    // Winner 0.71 vs runner-up 0.70: scores pass, the margin does not.
-    let state = confirmIdentity(EMPTY, "student-a", true, T0);
-    state = confirmIdentity(state, "student-a", true, T0 + 1500);
-    state = confirmIdentity(state, "student-a", true, T0 + 3000);
-    expect(identityConfirmed(state, MARGIN_MIN - 0.01, T0 + 3000)).toBe(false);
-    expect(identityConfirmed(state, MARGIN_MIN, T0 + 3000)).toBe(true);
+  it("reports no identity when every read missed the enrolled faces", () => {
+    let win = startFaceWindow(T0);
+    win = recordFaceSample(win, { id: "", score: 0.41, at: T0 });
+    win = recordFaceSample(win, { id: "", score: 0.39, at: T0 + 800 });
+    expect(bestFaceInWindow(win)).toBeNull();
+    expect(bestFaceInWindow(EMPTY_FACE_WINDOW)).toBeNull();
+    expect(faceWindowElapsed(EMPTY_FACE_WINDOW, T0 + 60_000)).toBe(false);
   });
 
-  it("a flickering identity never confirms", () => {
-    // Stranger alternates between two enrolled lookalikes every tick.
-    let state = confirmIdentity(EMPTY, "student-a", true, T0);
-    state = confirmIdentity(state, "student-b", true, T0 + 1000);
-    state = confirmIdentity(state, "student-a", true, T0 + 2000);
-    state = confirmIdentity(state, "student-b", true, T0 + 3000);
-    expect(identityConfirmed(state, 0.5, T0 + 4000)).toBe(false);
-  });
-
-  it("restarts the clock when the identity changes", () => {
-    let state = confirmIdentity(EMPTY, "student-a", true, T0);
-    state = confirmIdentity(state, "student-a", true, T0 + 2900);
-    // A different student steps in two seconds later: their window starts now.
-    state = confirmIdentity(state, "student-b", true, T0 + 3000);
-    expect(state.since).toBe(T0 + 3000);
-    expect(identityConfirmed(state, 1, T0 + 4000)).toBe(false);
-  });
-
-  it("an unmatched frame resets the tracker", () => {
-    let state = confirmIdentity(EMPTY, "student-a", true, T0);
-    state = confirmIdentity(state, "student-a", true, T0 + 1000);
-    state = confirmIdentity(state, null, false, T0 + 1500);
-    expect(identityConfirmed(state, 1, T0 + 9000)).toBe(false);
-    expect(state).toEqual({ id: null, count: 0, since: 0 });
+  it("a single fluke frame cannot carry a student over the threshold", () => {
+    let win = startFaceWindow(T0);
+    win = recordFaceSample(win, { id: "student-a", score: 0.95, at: T0 });
+    win = recordFaceSample(win, { id: "student-a", score: 0.5, at: T0 + 800 });
+    win = recordFaceSample(win, { id: "student-a", score: 0.55, at: T0 + 1600 });
+    // 0.6667 average — one hot frame is not evidence of identity.
+    expect(bestFaceInWindow(win)!.score).toBeLessThan(0.7);
   });
 });
 
@@ -902,6 +895,26 @@ describe("scan policy — stale-scan reset", () => {
     expect(UNKNOWN_ABSENCE_CLEAR_MS).toBe(2_000);
     expect(shouldClearStaleScan({ faceFreeSince: 5000, now: 6500 })).toBe(false);
     expect(shouldClearStaleScan({ faceFreeSince: 5000, now: 7000 })).toBe(true);
+  });
+});
+
+describe("scan policy — result card minimum hold", () => {
+  // The reported bug: a scanned school ID granted access, the card vanished a
+  // frame later (a QR entry is granted with an EMPTY oval, so the stale-scan
+  // reset fired immediately) and the student could not tell whether their code
+  // had been accepted at all.
+  it("guarantees five seconds of reading time", () => {
+    expect(RESULT_CARD_MIN_HOLD_MS).toBe(5_000);
+    expect(resultCardHolding(RESULT_CARD_MIN_HOLD_MS, RESULT_CARD_MIN_HOLD_MS - 1)).toBe(true);
+    expect(resultCardHolding(RESULT_CARD_MIN_HOLD_MS, RESULT_CARD_MIN_HOLD_MS - 4_000)).toBe(true);
+  });
+
+  it("releases the card once the hold elapses", () => {
+    expect(resultCardHolding(RESULT_CARD_MIN_HOLD_MS, RESULT_CARD_MIN_HOLD_MS)).toBe(false);
+  });
+
+  it("never holds a card that was never armed", () => {
+    expect(resultCardHolding(0, 1)).toBe(false);
   });
 });
 

@@ -17,6 +17,22 @@ export const REARM_ABSENCE_MS = 1500;
 /** How long the verdict card stays on screen after a decision. */
 export const VERDICT_HOLD_MS = 8000;
 
+/**
+ * Minimum time a result card (name + course) is guaranteed to stay on screen.
+ *
+ * A QR entry opens the gate with NOBODY in the oval — that is the whole point
+ * of it — so the "frame has been empty, the visitor walked on" reset fired on
+ * the very next tick and wiped the card a frame after it appeared. The student
+ * could not tell whether their code had been accepted. Nothing is allowed to
+ * take the card down before this window elapses.
+ */
+export const RESULT_CARD_MIN_HOLD_MS = 5000;
+
+/** True while a just-shown result card is still inside its guaranteed hold. */
+export function resultCardHolding(cardHoldUntil: number, now: number): boolean {
+  return now < cardHoldUntil;
+}
+
 /** How long the small "last result" strip lingers once the card clears. */
 export const LAST_RESULT_HOLD_MS = 30_000;
 
@@ -61,58 +77,85 @@ export const PERSON_COOLDOWN_MS = 60_000;
 export const PERSON_REDECIDE_MS = 4_000;
 
 /**
- * Anti-false-accept confirmation gate.
+ * Face matching window \u2014 how the kiosk decides WHICH student is standing there.
  *
- * One hot frame is not a verdict: a motion-blurred frame can score 0.61 for
- * the wrong student and would previously grant immediately, so the SAME
- * identity has to keep winning before the decision pipeline may run.
+ * One hot frame is not a verdict: at walk-up speed the first frames score the
+ * RIGHT student at 0.26, and a motion-blurred frame can score a stranger at
+ * 0.61. So every matched recognition tick is collected for three seconds and
+ * nobody is named until the window closes.
  *
- * The wait is measured in TIME, not in ticks. With two students in the ovals
- * each recognition tick carries two embeddings, so a five-tick count could
- * stretch far past the intended hold and delay the gate. Three seconds is the
- * short end that still leaves enough frames to separate a lookalike flicker
- * from a real match; the tick floor only stops one slow frame from confirming.
+ * The winner is the identity with the best AVERAGE score across the window, not
+ * whoever won the last frame. The previous rule demanded that the same identity
+ * win consecutive ticks, so one flicker towards a lookalike threw away every
+ * sample already collected and restarted the count \u2014 the correct student's
+ * name arrived late, or never appeared at all.
  */
-export const CONFIRM_WINDOW_MS = 3000;
+export const FACE_MATCH_WINDOW_MS = 3000;
 
-/** Consecutive wins required even when frames arrive slowly. */
-export const CONFIRM_MIN_TICKS = 3;
-
-/** Minimum margin of the winner over the runner-up identity. A lookalike
- *  collision (winner 0.71, runner-up 0.70) stays undecided \u2014 and therefore
- *  unknown \u2014 instead of granting the wrong person. */
-export const MARGIN_MIN = 0.08;
-
-/** Win-streak tracker for one identity, in one standing position. */
-export interface ConfirmState {
-  id: string | null;
-  count: number;
-  /** When the current streak began (ms since epoch). */
-  since: number;
+/** One recognition tick inside the matching window. */
+export interface FaceSample {
+  /** Enrolled identity the tick read, or "" when the frame matched nobody. */
+  id: string;
+  /** Cosine similarity of that read. */
+  score: number;
+  /** When the read happened (ms since epoch). */
+  at: number;
 }
 
-export const EMPTY_CONFIRM: ConfirmState = { id: null, count: 0, since: 0 };
-
-/** Advance the confirmation tracker by one recognition tick. */
-export function confirmIdentity(
-  prev: ConfirmState,
-  personId: string | null,
-  matched: boolean,
-  now: number,
-): ConfirmState {
-  if (!matched || !personId) return { id: null, count: 0, since: 0 };
-  if (prev.id !== personId) return { id: personId, count: 1, since: now };
-  return { id: personId, count: prev.count + 1, since: prev.since || now };
+/** Samples gathered for one standing position. `startedAt: 0` = not started. */
+export interface FaceWindow {
+  startedAt: number;
+  samples: FaceSample[];
 }
 
-/** True once the same identity has held for the full window, won enough ticks
- *  and stands clear of the runner-up. `margin` is winner minus runner-up
- *  similarity (pass 1 when there is no other enrolled profile to compare). */
-export function identityConfirmed(state: ConfirmState, margin: number, now: number): boolean {
-  if (state.id === null) return false;
-  if (state.count < CONFIRM_MIN_TICKS) return false;
-  if (now - state.since < CONFIRM_WINDOW_MS) return false;
-  return margin >= MARGIN_MIN;
+export const EMPTY_FACE_WINDOW: FaceWindow = { startedAt: 0, samples: [] };
+
+/** Cap the buffer: a long stay must not grow it without bound. */
+const MAX_FACE_SAMPLES = 40;
+
+/** Open a fresh window at `now`. */
+export function startFaceWindow(now: number): FaceWindow {
+  return { startedAt: now, samples: [] };
+}
+
+/** Add one tick's read; the first sample opens the window if it is not open. */
+export function recordFaceSample(win: FaceWindow, sample: FaceSample): FaceWindow {
+  const startedAt = win.startedAt === 0 ? sample.at : win.startedAt;
+  const samples = [...win.samples, sample].slice(-MAX_FACE_SAMPLES);
+  return { startedAt, samples };
+}
+
+/** True once the window has run its full span. */
+export function faceWindowElapsed(win: FaceWindow, now: number): boolean {
+  if (win.startedAt === 0) return false;
+  return now - win.startedAt >= FACE_MATCH_WINDOW_MS;
+}
+
+/**
+ * The identity with the best average similarity across the window, and how many
+ * reads backed it. Null while no identity was ever read. A tie goes to the
+ * identity seen in more frames \u2014 more evidence is the better bet.
+ */
+export function bestFaceInWindow(
+  win: FaceWindow,
+): { id: string; score: number; samples: number } | null {
+  const totals = new Map<string, { sum: number; count: number }>();
+  for (const sample of win.samples) {
+    if (!sample.id) continue;
+    const entry = totals.get(sample.id) ?? { sum: 0, count: 0 };
+    entry.sum += sample.score;
+    entry.count += 1;
+    totals.set(sample.id, entry);
+  }
+
+  let best: { id: string; score: number; samples: number } | null = null;
+  for (const [id, entry] of totals) {
+    const score = entry.sum / entry.count;
+    if (!best || score > best.score || (score === best.score && entry.count > best.samples)) {
+      best = { id, score, samples: entry.count };
+    }
+  }
+  return best;
 }
 
 /**

@@ -1,26 +1,22 @@
 /**
- * Standing positions
- * ==================
- * The kiosk reads at most TWO people at once on a desktop display, and ONE on a
- * phone or tablet where two half-width ovals would leave neither target usable.
+ * The standing position
+ * =====================
+ * The kiosk reads ONE person at a time, standing in ONE oval. That gate is the
+ * whole safety story: a face is only read when its centre is inside the oval, so
+ * a queue behind the student, a passer-by at the edge of frame or someone
+ * leaning in can never win the frame and be named instead.
  *
- * This is the fix for the crowd problem. Previously the loop took the LARGEST
- * face in frame, so anyone behind the student — a queue, a passer-by, someone
- * leaning in — could win the frame and be named instead. With fixed zones the
- * answer belongs to the person standing where the UI told them to stand, and
- * everybody else is ignored.
+ * The old two-lane desktop layout asked two students to stand still in two
+ * different places at once. In a real lobby the second lane stayed empty, so it
+ * is gone rather than left half-working.
  *
  * The oval is tall rather than wide, matching a standing person's head and
- * shoulders, and it stops short of 0.5 so nobody is ever attributed across the
- * black divider. Radii are fractions of DIFFERENT sides: ry is a fraction of the
- * frame height, which is only ~56% of the width on a 16:9 kiosk, so ry has to be
- * roughly 1.8x rx before the drawn shape actually looks taller than it is wide.
+ * shoulders. Radii are fractions of DIFFERENT sides — rx of the frame WIDTH, ry
+ * of the HEIGHT — and height is only ~56% of width on a 16:9 kiosk, so ry has to
+ * clear roughly 1.8x rx before the drawn shape is actually taller than it is
+ * wide.
  *
- * Two, not three: every face costs one ArcFace embedding plus a match, and the
- * inference worker runs them one at a time. Two fits comfortably inside the
- * 500 ms recognition tick; three starts to queue and makes students wait.
- *
- * Pure maths — no DOM — so the assignment rules are unit-tested.
+ * Pure maths — no DOM — so the standing rule is unit-tested.
  */
 
 export interface SlotZone {
@@ -32,31 +28,61 @@ export interface SlotZone {
   ry: number;
 }
 
-/** Desktop / landscape: two standing spots either side of the divider. */
-export const SLOT_ZONES: readonly SlotZone[] = [
-  { id: 0, cx: 0.32, cy: 0.49, rx: 0.17, ry: 0.38 },
-  { id: 1, cx: 0.68, cy: 0.49, rx: 0.17, ry: 0.38 },
-];
-
 /**
- * Phone / tablet: one spot in the middle. Two ovals on a 390 px screen would be
- * 190 px targets each; one centred oval is the same UI with the second lane
- * switched off, not a squeezed version of the desktop layout.
+ * The one standing spot, the same shape on every screen.
+ *
+ * These are fractions of the CAMERA FRAME, not of the window, and that frame is
+ * landscape on every device. A portrait phone shows only the middle slice of it
+ * (object-fit: cover crops the sides), so the oval has to be narrow enough to
+ * fit that slice — a "phone" variant that widened rx to 0.26 drew an oval wider
+ * than an 824 px screen and clipped it on both sides.
  */
 export const SINGLE_ZONE: readonly SlotZone[] = [
-  { id: 0, cx: 0.5, cy: 0.49, rx: 0.26, ry: 0.38 },
+  { id: 0, cx: 0.5, cy: 0.49, rx: 0.17, ry: 0.38 },
 ];
 
+/** How much of the visible width the oval should take. */
+const OVAL_WIDTH_SHARE = 0.78;
+
+/** Narrower than this and the oval is too small to aim at. */
+const MIN_RX = 0.1;
+
 /**
- * Exactly on the ellipse counts; a face centred between the two ovals does not.
- * (Slack here let someone standing in the gap be read as the left student.)
+ * The oval sized for the screen it is actually shown on.
+ *
+ * A 16:9 camera frame in a portrait window is covered by scaling to the height,
+ * which crops the sides: a 390x844 phone shows only the middle ~26% of the frame
+ * width, where the fixed rx of 0.17 would draw an oval wider than the screen and
+ * slice it off at both edges. So rx shrinks until the drawn oval fits the
+ * visible slice, and only ever narrows — the desktop shape is the widest it gets.
+ * ry stays put, so the oval only becomes more clearly oval on a phone.
+ */
+export function standingZoneFor(args: {
+  frameWidth: number;
+  frameHeight: number;
+  boxWidth: number;
+  viewportWidth: number;
+}): SlotZone {
+  const frame = args.frameWidth > 0 ? args.frameWidth : 1;
+  const scale = args.boxWidth > 0 ? args.boxWidth / frame : 1;
+  const visibleFrameWidth = scale > 0 ? args.viewportWidth / scale : frame;
+  const rx = Math.min(
+    SINGLE_ZONE[0].rx,
+    Math.max(MIN_RX, (OVAL_WIDTH_SHARE * visibleFrameWidth) / (2 * frame)),
+  );
+  return { id: 0, cx: 0.5, cy: 0.49, rx, ry: SINGLE_ZONE[0].ry };
+}
+
+/**
+ * Exactly on the ellipse counts; a face centred outside it does not. (Slack here
+ * would let someone standing just outside the oval be read as the student.)
  */
 const EDGE_TOLERANCE = 1.0;
 
 /** Which standing position a face is centred in, or null when it is not. */
 export function slotOfFace(
   bbox: readonly [number, number, number, number],
-  zones: readonly SlotZone[] = SLOT_ZONES,
+  zones: readonly SlotZone[] = SINGLE_ZONE,
 ): number | null {
   if (bbox[2] <= 0 || bbox[3] <= 0) return null;
   const cx = bbox[0] + bbox[2] / 2;
@@ -75,12 +101,15 @@ export function slotOfFace(
 }
 
 /**
- * One face per oval, largest wins if two people crowd the same one.
- * Faces outside every oval are not returned at all.
+ * The face standing in the oval, or nothing.
+ *
+ * Everyone outside every oval is dropped, and when two people crowd the same
+ * oval the larger face wins — that is the person actually standing at the kiosk,
+ * not the one waving behind them.
  */
 export function assignFacesToSlots<T extends { bbox: [number, number, number, number] }>(
   faces: readonly T[],
-  zones: readonly SlotZone[] = SLOT_ZONES,
+  zones: readonly SlotZone[] = SINGLE_ZONE,
 ): Array<{ face: T; slot: number }> {
   const perSlot = new Map<number, T>();
 
