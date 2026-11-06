@@ -1298,7 +1298,8 @@ export default function KioskPage() {
       // Re-read every few hundred ms while the code is held up: one decision
       // per minute, like every other path.
       const prevUnknown = lastDecisionByPersonRef.current.get(personId);
-      if (prevUnknown && isRepeatDecision({ lastDecisionAt: prevUnknown.at, now: Date.now() })) return;
+      if (prevUnknown && isRepeatDecision({ lastDecisionAt: prevUnknown.at, now: Date.now() }))
+        return;
       lastDecisionByPersonRef.current.set(personId, { at: Date.now(), granted: false });
       const detail = "School ID not enrolled \u2014 see the guard station";
       ++decisionSeqRef.current;
@@ -1347,7 +1348,8 @@ export default function KioskPage() {
         ? `Campus lockdown - ${settingsRef.current.lockdownReason}`
         : "Campus lockdown - see guard";
       const lockedPrev = lastDecisionByPersonRef.current.get(person.id);
-      if (lockedPrev && isRepeatDecision({ lastDecisionAt: lockedPrev.at, now: Date.now() })) return;
+      if (lockedPrev && isRepeatDecision({ lastDecisionAt: lockedPrev.at, now: Date.now() }))
+        return;
       lastDecisionByPersonRef.current.set(person.id, { at: Date.now(), granted: false });
       const lockedToken = ++decisionSeqRef.current;
       setKioskState("denied");
@@ -1426,9 +1428,11 @@ export default function KioskPage() {
           qrFaceBbox,
           person.uniform_type ?? "",
           canvasRef.current ?? undefined,
-        ).catch(
-          (): UniformCheckResult => ({ ok: false, confidence: 0, detail: "Uniform detector unavailable" }),
-        );
+        ).catch((): UniformCheckResult => ({
+          ok: false,
+          confidence: 0,
+          detail: "Uniform detector unavailable",
+        }));
         uniformScanRef.current = null;
         if (!uniformCheck.ok) {
           uniformDetail = uniformCheck.detail;
@@ -1442,7 +1446,13 @@ export default function KioskPage() {
         setKioskState("denied");
         playCue("deny");
         setStatusMessage(uniformDetail);
-        setHoldNotice({ kind: "denied", name: person.name, at: Date.now(), personId: person.id, detail: uniformDetail });
+        setHoldNotice({
+          kind: "denied",
+          name: person.name,
+          at: Date.now(),
+          personId: person.id,
+          detail: uniformDetail,
+        });
         rememberDecision(person.name, person.id, false);
         setSlotPhaseAt(slot, "denied", uniformDetail);
         cardHoldUntilRef.current = Date.now() + RESULT_CARD_MIN_HOLD_MS;
@@ -1489,9 +1499,7 @@ export default function KioskPage() {
     if (gateConnectedNow) {
       await openGate().catch((err) => console.warn("[Kiosk] Gate open failed:", err));
     }
-    const gateConfirmed = gateConnectedNow
-      ? await confirmGateOpen(3000).catch(() => false)
-      : false;
+    const gateConfirmed = gateConnectedNow ? await confirmGateOpen(3000).catch(() => false) : false;
     const gateOutcome = resolveGateOutcome({
       gateConnected: gateConnectedNow,
       confirmed: gateConfirmed,
@@ -1609,7 +1617,11 @@ export default function KioskPage() {
     // either we are verifying the decision or this face is unknown.
     setScanStep(match.matched ? "verify" : settledUnknown ? "done" : "face");
     if (settledUnknown && !match.matched && !cardHoldActive) {
-      setSlotPhaseAt(slot, "unknown", `${Math.max(0, Math.round(match.confidence * 100))}% closest`);
+      setSlotPhaseAt(
+        slot,
+        "unknown",
+        `${Math.max(0, Math.round(match.confidence * 100))}% closest`,
+      );
     }
 
     // ─── Unknown-visitor notice (settled, still no match) ──
@@ -1768,7 +1780,7 @@ export default function KioskPage() {
     }
 
     // Guests are flagged by their uniform_type marker (data convention only).
-    const isGuestMatch = match.matched && match.person?.uniform_type === 'guest';
+    const isGuestMatch = match.matched && match.person?.uniform_type === "guest";
 
     // Uniform check — students only, guests skip it (no uniform requirement).
     // The torso band under the named face goes to the CLIP zero-shot check:
@@ -1793,9 +1805,11 @@ export default function KioskPage() {
         face.bbox,
         match.person.uniform_type ?? "",
         canvas,
-      ).catch(
-        (): UniformCheckResult => ({ ok: false, confidence: 0, detail: "Uniform detector unavailable" }),
-      );
+      ).catch((): UniformCheckResult => ({
+        ok: false,
+        confidence: 0,
+        detail: "Uniform detector unavailable",
+      }));
       uniformScanRef.current = null;
     }
     const uniformFailed = uniformCheck !== null && uniformCheck.ok !== true;
@@ -1803,7 +1817,7 @@ export default function KioskPage() {
     // Determine access (lockdown > guest expiry > uniform > face+policy).
     const locked = settingsRef.current.lockdownMode;
     let guestExpired = false;
-    let guestExpiryLabel = '';
+    let guestExpiryLabel = "";
     if (isGuestMatch) {
       const raw = (match.person as { valid_until?: string | null })?.valid_until;
       const pass = evaluateGuestPass(raw, Date.now());
@@ -1813,12 +1827,20 @@ export default function KioskPage() {
     const denyReason = !match.matched
       ? null
       : locked
-        ? { code: 'LOCKDOWN_ACTIVE', note: settingsRef.current.lockdownReason ? `Campus lockdown — ${settingsRef.current.lockdownReason}` : 'Campus lockdown — see guard' }
+        ? {
+            code: "LOCKDOWN_ACTIVE",
+            note: settingsRef.current.lockdownReason
+              ? `Campus lockdown — ${settingsRef.current.lockdownReason}`
+              : "Campus lockdown — see guard",
+          }
         : guestExpired
-          ? { code: 'GUEST_EXPIRED', note: `Guest pass expired${guestExpiryLabel ? ` ${guestExpiryLabel}` : ''} — see guard to renew` }
+          ? {
+              code: "GUEST_EXPIRED",
+              note: `Guest pass expired${guestExpiryLabel ? ` ${guestExpiryLabel}` : ""} — see guard to renew`,
+            }
           : uniformFailed
             ? {
-                code: uniformCheck!.detectedType ? 'WRONG_UNIFORM' : 'NO_UNIFORM',
+                code: uniformCheck!.detectedType ? "WRONG_UNIFORM" : "NO_UNIFORM",
                 note: uniformCheck!.detail,
               }
             : null;
@@ -1912,10 +1934,12 @@ export default function KioskPage() {
       if (!isRepeatGrant) {
         const passNote = isGuestMatch
           ? (() => {
-            const p = match.person as { host_name?: string | null; valid_until?: string | null };
-            const exp = p.valid_until ? ` valid until ${new Date(p.valid_until).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "";
-            return `Guest pass${p.host_name ? ` host ${p.host_name}` : ""}${exp} — face verified`;
-          })()
+              const p = match.person as { host_name?: string | null; valid_until?: string | null };
+              const exp = p.valid_until
+                ? ` valid until ${new Date(p.valid_until).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`
+                : "";
+              return `Guest pass${p.host_name ? ` host ${p.host_name}` : ""}${exp} — face verified`;
+            })()
           : uniformCheck
             ? `Uniform verified — ${uniformCheck.detail}`
             : "Granted — uniform check disabled in settings";
@@ -2585,9 +2609,7 @@ export default function KioskPage() {
             if (!pick.ok) {
               // Never embed "whatever face was biggest": a group photo used to
               // file a classmate's face under this student's name.
-              console.warn(
-                `[Kiosk] Skipped a photo for ${student.name}: ${pick.reason}.`,
-              );
+              console.warn(`[Kiosk] Skipped a photo for ${student.name}: ${pick.reason}.`);
               continue;
             }
 
@@ -2942,9 +2964,7 @@ export default function KioskPage() {
           face: "ok" as StepVisual,
           identity: "ok" as StepVisual,
           title: "Access denied — step away, then try again",
-          hint:
-            holdNotice.detail ??
-            "Step out of the oval and back in to re-scan.",
+          hint: holdNotice.detail ?? "Step out of the oval and back in to re-scan.",
         };
       }
 
@@ -2962,8 +2982,7 @@ export default function KioskPage() {
     // The rail may only ever name a CONFIRMED identity: the raw per-tick
     // winner flickers between lookalikes, so an unconfirmed "match" reads as
     // still-verifying — never a name, never a score.
-    const livePersonId =
-      lastMatch?.matched && lastMatch.person ? lastMatch.person.id : null;
+    const livePersonId = lastMatch?.matched && lastMatch.person ? lastMatch.person.id : null;
     const confirmedLive = confirmed && livePersonId === confirmed.id ? confirmed : null;
     const matched = confirmedLive !== null;
     const verifyHint =
@@ -3050,7 +3069,11 @@ export default function KioskPage() {
           {/* Institutional Top Header (Edge-to-Edge Full Width) */}
           <div className="relative z-10 flex items-center justify-between gap-2 w-full max-w-5xl mx-auto pb-2.5 sm:pb-6 border-b border-slate-200/80 pointer-events-none">
             <div className="flex items-center gap-3.5 sm:gap-4">
-              <img src="/isufst-logo.png" alt="ISUFST logo" className="splash-logo rounded-2xl object-contain p-0.5 shadow-lg shadow-blue-600/25 shrink-0 bg-white" />
+              <img
+                src="/isufst-logo.png"
+                alt="ISUFST logo"
+                className="splash-logo rounded-2xl object-contain p-0.5 shadow-lg shadow-blue-600/25 shrink-0 bg-white"
+              />
               <div className="leading-snug">
                 <p className="text-[10px] leading-[1.15] sm:text-base md:text-lg font-black tracking-tight text-slate-900 uppercase">
                   {schoolBrand.name}
@@ -3210,13 +3233,20 @@ export default function KioskPage() {
       )}
 
       {/* ─── Top Bar ─────────────────────────────────── */}
-      <div className="absolute top-0 left-0 right-0 flex items-center justify-between px-4 sm:px-10 py-5 sm:py-7 z-30 pointer-events-none" style={{ paddingTop: "max(1.25rem, env(safe-area-inset-top))" }}>
+      <div
+        className="absolute top-0 left-0 right-0 flex items-center justify-between px-4 sm:px-10 py-5 sm:py-7 z-30 pointer-events-none"
+        style={{ paddingTop: "max(1.25rem, env(safe-area-inset-top))" }}
+      >
         <div className="flex items-center gap-3 pointer-events-auto">
           {/* Floating school mark — no backdrop, no badge: the logo sits alone
               over the full camera view with the live status dot riding its
               corner, so chrome never boxes in the student's face. */}
           <div className="relative pointer-events-auto" title="ISUFST Smart Gate terminal">
-            <img src="/isufst-logo.png" alt="ISUFST logo" className="w-14 h-14 sm:w-16 sm:h-16 object-contain drop-shadow-[0_2px_12px_rgba(0,0,0,0.45)]" />
+            <img
+              src="/isufst-logo.png"
+              alt="ISUFST logo"
+              className="w-14 h-14 sm:w-16 sm:h-16 object-contain drop-shadow-[0_2px_12px_rgba(0,0,0,0.45)]"
+            />
             <span
               className={`absolute bottom-1 right-1 inline-flex w-3 h-3 rounded-full ring-2 ring-white ${
                 kioskState === "error"
@@ -3272,8 +3302,12 @@ export default function KioskPage() {
                 : "Policy mode — face + guest pass / lockdown active."
             }
           >
-            <ShieldCheck className={`w-4 h-4 ${lockdownActive ? "text-rose-600" : "text-emerald-600"}`} />
-            <span className={`text-[10px] font-black tracking-widest ${lockdownActive ? "text-rose-700" : "text-emerald-700"}`}>
+            <ShieldCheck
+              className={`w-4 h-4 ${lockdownActive ? "text-rose-600" : "text-emerald-600"}`}
+            />
+            <span
+              className={`text-[10px] font-black tracking-widest ${lockdownActive ? "text-rose-700" : "text-emerald-700"}`}
+            >
               {lockdownActive ? "LOCKDOWN" : "POLICY ON"}
             </span>
             {!online && dbStats.unsyncedCount > 0 && (
@@ -3294,7 +3328,10 @@ export default function KioskPage() {
       </div>
 
       {cameraDown && (
-        <div className="absolute left-4 sm:left-10 z-40 glass-pill pl-3 pr-4 py-2.5 flex items-center gap-2 bg-amber-50/95 border-amber-200 shadow-sm" style={{ top: "max(5.5rem, calc(env(safe-area-inset-top) + 4.5rem))" }}>
+        <div
+          className="absolute left-4 sm:left-10 z-40 glass-pill pl-3 pr-4 py-2.5 flex items-center gap-2 bg-amber-50/95 border-amber-200 shadow-sm"
+          style={{ top: "max(5.5rem, calc(env(safe-area-inset-top) + 4.5rem))" }}
+        >
           <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
           <span className="text-[11px] sm:text-xs font-bold text-amber-800 uppercase tracking-wider">
             Camera offline — hardware test mode
@@ -3315,7 +3352,11 @@ export default function KioskPage() {
           {/* Institutional Top Header */}
           <div className="relative z-10 flex items-center justify-between w-full max-w-5xl mx-auto pb-4 sm:pb-6 border-b border-slate-200/80">
             <div className="flex items-center gap-3.5 sm:gap-4">
-              <img src="/isufst-logo.png" alt="ISUFST logo" className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl object-contain p-0.5 shadow-lg shadow-blue-600/25 shrink-0 bg-white" />
+              <img
+                src="/isufst-logo.png"
+                alt="ISUFST logo"
+                className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl object-contain p-0.5 shadow-lg shadow-blue-600/25 shrink-0 bg-white"
+              />
               <div className="leading-snug">
                 <p className="text-sm sm:text-base md:text-lg font-black tracking-tight text-slate-900 uppercase">
                   {schoolBrand.name}
@@ -3430,7 +3471,11 @@ export default function KioskPage() {
           {/* Top Header */}
           <div className="relative z-10 flex items-center justify-between w-full max-w-5xl mx-auto pb-4 sm:pb-6 border-b border-slate-200/80">
             <div className="flex items-center gap-3.5 sm:gap-4">
-              <img src="/isufst-logo.png" alt="ISUFST logo" className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl object-contain p-0.5 shadow-lg shadow-rose-600/25 shrink-0 bg-white" />
+              <img
+                src="/isufst-logo.png"
+                alt="ISUFST logo"
+                className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl object-contain p-0.5 shadow-lg shadow-rose-600/25 shrink-0 bg-white"
+              />
               <div className="leading-snug">
                 <p className="text-sm sm:text-base md:text-lg font-black tracking-tight text-slate-900 uppercase">
                   Iloilo State University of Fisheries and Science and Technology
@@ -3563,7 +3608,9 @@ export default function KioskPage() {
                 <span className="self-center text-[10px] font-black tracking-[0.22em] text-white/85 drop-shadow-[0_1px_3px_rgba(0,0,0,0.8)]">
                   STAND HERE
                 </span>
-                <div className={`rounded-2xl border-2 px-3 py-2.5 sm:px-4 sm:py-3 shadow-xl backdrop-blur-md ${tone}`}>
+                <div
+                  className={`rounded-2xl border-2 px-3 py-2.5 sm:px-4 sm:py-3 shadow-xl backdrop-blur-md ${tone}`}
+                >
                   <p className="text-[11px] sm:text-xs font-black tracking-widest">{title}</p>
                   {(phase === "confirmed" || phase === "granted") && card ? (
                     <>
@@ -3612,39 +3659,50 @@ export default function KioskPage() {
               : "max(5.5rem, calc(env(safe-area-inset-top) + 4.5rem))",
           }}
         >
-          <span className="text-[10px] font-black tracking-widest text-surface-500 uppercase">School ID</span>
-          <span className={`text-[11px] font-mono font-bold ${qrSeen ? "text-emerald-700" : "text-amber-700"}`}>
+          <span className="text-[10px] font-black tracking-widest text-surface-500 uppercase">
+            School ID
+          </span>
+          <span
+            className={`text-[11px] font-mono font-bold ${qrSeen ? "text-emerald-700" : "text-amber-700"}`}
+          >
             {qrSeen ? qrSeen.studentId : "SCAN QR"}
           </span>
         </div>
       )}
 
       {lastDecision &&
-      !holdNotice &&
-      !unknownNotice &&
-      kioskState !== "granted" &&
-      kioskState !== "denied" &&
-      !(lastMatch?.matched && lastMatch.person && lastMatch.person.id !== lastDecision.personId) && (
-        <div className="absolute left-4 sm:left-10 z-30 pointer-events-none flex items-center gap-2 rounded-lg bg-white/90 backdrop-blur-md px-3 py-1.5 shadow-sm border border-white/40" style={{ bottom: "max(7rem, calc(env(safe-area-inset-bottom) + 6rem))" }}>
-          <span className="text-[10px] font-black tracking-widest text-surface-500 uppercase">
-            Last
-          </span>
-          <span className="text-[13px] font-bold text-surface-900">{lastDecision.name}</span>
-          <span
-            className={`text-[11px] font-mono font-bold ${
-              lastDecision.granted ? "text-emerald-700" : "text-rose-600"
-            }`}
+        !holdNotice &&
+        !unknownNotice &&
+        kioskState !== "granted" &&
+        kioskState !== "denied" &&
+        !(
+          lastMatch?.matched &&
+          lastMatch.person &&
+          lastMatch.person.id !== lastDecision.personId
+        ) && (
+          <div
+            className="absolute left-4 sm:left-10 z-30 pointer-events-none flex items-center gap-2 rounded-lg bg-white/90 backdrop-blur-md px-3 py-1.5 shadow-sm border border-white/40"
+            style={{ bottom: "max(7rem, calc(env(safe-area-inset-bottom) + 6rem))" }}
           >
-            {lastDecision.granted ? "GRANTED" : "DENIED"}
-          </span>
-          <span className="text-[11px] font-mono text-surface-500">
-            {new Date(lastDecision.at).toLocaleTimeString([], {
-              hour: "numeric",
-              minute: "2-digit",
-            })}
-          </span>
-        </div>
-      )}
+            <span className="text-[10px] font-black tracking-widest text-surface-500 uppercase">
+              Last
+            </span>
+            <span className="text-[13px] font-bold text-surface-900">{lastDecision.name}</span>
+            <span
+              className={`text-[11px] font-mono font-bold ${
+                lastDecision.granted ? "text-emerald-700" : "text-rose-600"
+              }`}
+            >
+              {lastDecision.granted ? "GRANTED" : "DENIED"}
+            </span>
+            <span className="text-[11px] font-mono text-surface-500">
+              {new Date(lastDecision.at).toLocaleTimeString([], {
+                hour: "numeric",
+                minute: "2-digit",
+              })}
+            </span>
+          </div>
+        )}
 
       {/* ─── Floating gate banner ──────────────────── */}
       {/* The verdict card clears after 8s, but a real barrier stays open for
@@ -3768,7 +3826,9 @@ export default function KioskPage() {
             </div>
             <div className="flex justify-between">
               <span className="text-surface-500">Entry policy</span>
-              <span className={`font-bold ${uniformEnforced ? "text-green-600" : "text-surface-400"}`}>
+              <span
+                className={`font-bold ${uniformEnforced ? "text-green-600" : "text-surface-400"}`}
+              >
                 {uniformEnforced ? "FACE + UNIFORM" : "FACE + PASS"}
               </span>
             </div>
@@ -4005,7 +4065,11 @@ export default function KioskPage() {
                         </p>
                         <p className="text-[11px] font-semibold text-surface-400 uppercase truncate">
                           {log.method || "face"} · {log.success ? "granted" : "denied"}
-                          {log.decision_note ? ` · ${log.decision_note}` : log.failure_reason ? ` · ${log.failure_reason}` : ""}
+                          {log.decision_note
+                            ? ` · ${log.decision_note}`
+                            : log.failure_reason
+                              ? ` · ${log.failure_reason}`
+                              : ""}
                         </p>
                       </div>
                       <span className="text-xs font-semibold text-surface-400 shrink-0 font-mono">

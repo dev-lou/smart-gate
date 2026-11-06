@@ -640,14 +640,14 @@ describe("scan policy — identity-aware decision gate", () => {
   // the per-person map, so their lastDecisionAt is 0 and they are decided
   // immediately — even while the previous student's notice is still up.
   it("always decides a person with no prior decision (brand-new student)", () => {
-    expect(shouldDecide({ lastDecisionAt: 0, frameEmptySinceLastDecision: false, now: 60_000 })).toBe(
-      true,
-    );
+    expect(
+      shouldDecide({ lastDecisionAt: 0, frameEmptySinceLastDecision: false, now: 60_000 }),
+    ).toBe(true);
     // Even one second after a DIFFERENT person was granted — the new arrival
     // is never blocked by the previous person's state.
-    expect(shouldDecide({ lastDecisionAt: 0, frameEmptySinceLastDecision: false, now: 1_000 })).toBe(
-      true,
-    );
+    expect(
+      shouldDecide({ lastDecisionAt: 0, frameEmptySinceLastDecision: false, now: 1_000 }),
+    ).toBe(true);
   });
 
   it("decides the same person once per stay while they never leave the frame", () => {

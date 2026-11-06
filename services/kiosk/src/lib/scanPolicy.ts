@@ -87,7 +87,11 @@ export const UNKNOWN_ABSENCE_CLEAR_MS = 2_000;
 /** True when the gate area has been empty long enough to retire a stale
  *  unknown-face card and reset the recognition trackers for the next visitor.
  *  A blink or one dropped detection frame never reads as "walked away". */
-export function shouldClearStaleScan(args: { faceFreeSince: number; now: number; ms?: number }): boolean {
+export function shouldClearStaleScan(args: {
+  faceFreeSince: number;
+  now: number;
+  ms?: number;
+}): boolean {
   if (args.faceFreeSince <= 0) return false;
   return args.now - args.faceFreeSince >= (args.ms ?? UNKNOWN_ABSENCE_CLEAR_MS);
 }

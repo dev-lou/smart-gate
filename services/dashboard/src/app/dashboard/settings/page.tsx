@@ -4,13 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { useToast } from "@/components/ToastProvider";
-import {
-  Settings,
-  Save,
-  CheckCircle2,
-  ShieldCheck,
-  SlidersHorizontal,
-} from "lucide-react";
+import { Settings, Save, CheckCircle2, ShieldCheck, SlidersHorizontal } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -67,14 +61,15 @@ const SETTING_META: Record<
   },
   lockdown_mode: {
     label: "Campus Lockdown",
-      type: "boolean",
-      description: "When ON the kiosk denies everyone with LOCKDOWN_ACTIVE. Guard override with reason still logs.",
-    },
-    lockdown_reason: {
-      label: "Lockdown Reason",
-      type: "text",
-      description: "Shown on kiosk + logs while lockdown is ON (e.g. Emergency drill 2PM).",
-    },
+    type: "boolean",
+    description:
+      "When ON the kiosk denies everyone with LOCKDOWN_ACTIVE. Guard override with reason still logs.",
+  },
+  lockdown_reason: {
+    label: "Lockdown Reason",
+    type: "text",
+    description: "Shown on kiosk + logs while lockdown is ON (e.g. Emergency drill 2PM).",
+  },
   gate_open_duration: {
     label: "Gate Open Duration (seconds)",
     type: "number",
@@ -167,10 +162,7 @@ export default function SettingsPage() {
     () => settings.filter((s) => KNOWN_KEYS.includes(s.key)),
     [settings],
   );
-  const orphanKeys = useMemo(
-    () => settings.filter((s) => !KNOWN_KEYS.includes(s.key)),
-    [settings],
-  );
+  const orphanKeys = useMemo(() => settings.filter((s) => !KNOWN_KEYS.includes(s.key)), [settings]);
 
   function updateSetting(key: string, value: string) {
     setSettings((prev) => prev.map((s) => (s.key === key ? { ...s, value } : s)));

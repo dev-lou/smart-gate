@@ -41,13 +41,13 @@ Thumbs.db
 *.log
 
 # ============================================================
-# YOLO / ML Models
+# Kiosk ML models
 #
-# The kiosk model IS committed on purpose. The browser fetches
-# /models/uniform_yolo11n.onnx at runtime, so if it is missing from the repo
-# the deployed kiosk silently loses dress-code detection — it still matches
-# faces, it just fails every uniform check with no obvious cause.
-# The base weights (*.pt) stay out: they are 5.6 MB and only needed to retrain.
+# The kiosk models ARE committed on purpose. The browser fetches
+# /models/clip_vision_q8.onnx (+ uniform_prompts.json) at runtime, so if
+# they are missing from the repo the deployed kiosk silently loses
+# dress-code detection — it still matches faces, it just fails every
+# uniform check with no obvious cause.
 # ============================================================
 *.pt
 *.onnx

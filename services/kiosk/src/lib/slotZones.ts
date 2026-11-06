@@ -37,9 +37,7 @@ export interface SlotZone {
  * fit that slice — a "phone" variant that widened rx to 0.26 drew an oval wider
  * than an 824 px screen and clipped it on both sides.
  */
-export const SINGLE_ZONE: readonly SlotZone[] = [
-  { id: 0, cx: 0.5, cy: 0.49, rx: 0.17, ry: 0.38 },
-];
+export const SINGLE_ZONE: readonly SlotZone[] = [{ id: 0, cx: 0.5, cy: 0.49, rx: 0.17, ry: 0.38 }];
 
 /** How much of the visible width the oval should take. */
 const OVAL_WIDTH_SHARE = 0.78;
@@ -122,7 +120,5 @@ export function assignFacesToSlots<T extends { bbox: [number, number, number, nu
     }
   }
 
-  return [...perSlot.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([slot, face]) => ({ face, slot }));
+  return [...perSlot.entries()].sort((a, b) => a[0] - b[0]).map(([slot, face]) => ({ face, slot }));
 }

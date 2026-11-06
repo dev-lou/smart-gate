@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  QR_FRESH_MS,
-  encodeStudentQr,
-  evaluateScannedQr,
-  isQrFresh,
-  parseQrPayload,
-} from "../qr";
+import { QR_FRESH_MS, encodeStudentQr, evaluateScannedQr, isQrFresh, parseQrPayload } from "../qr";
 
 describe("encodeStudentQr / parseQrPayload", () => {
   it("round-trips a student ID", () => {

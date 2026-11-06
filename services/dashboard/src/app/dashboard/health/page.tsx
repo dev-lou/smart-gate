@@ -221,7 +221,9 @@ export default function HealthPage() {
             <div className="flex items-center gap-2 text-surface-600 font-medium">
               <Camera className="w-4 h-4 text-surface-400" />
               Camera:{" "}
-              <span className={live.camera_ok ? "text-green-600 font-bold" : "text-red-500 font-bold"}>
+              <span
+                className={live.camera_ok ? "text-green-600 font-bold" : "text-red-500 font-bold"}
+              >
                 {live.camera_ok ? "OK" : "FAIL"}
               </span>
             </div>
@@ -258,9 +260,7 @@ export default function HealthPage() {
             {live.fps !== null && (
               <div className="text-surface-600 font-medium">
                 FPS:{" "}
-                <span className="font-mono font-bold text-surface-900">
-                  {Math.round(live.fps)}
-                </span>
+                <span className="font-mono font-bold text-surface-900">{Math.round(live.fps)}</span>
               </div>
             )}
           </div>
@@ -284,9 +284,9 @@ export default function HealthPage() {
             </h3>
           </div>
           <p className="text-xs text-surface-500 font-medium mb-4">
-            Leftover rows from previous installs or test browsers (older builds made a random id
-            per profile). The card above is the real kiosk. Clear these rows in Supabase to empty
-            this list:{" "}
+            Leftover rows from previous installs or test browsers (older builds made a random id per
+            profile). The card above is the real kiosk. Clear these rows in Supabase to empty this
+            list:{" "}
             <code className="font-mono bg-surface-100 px-1.5 py-0.5 rounded">
               delete from kiosk_heartbeats where kiosk_id != &apos;gate-01&apos;
             </code>

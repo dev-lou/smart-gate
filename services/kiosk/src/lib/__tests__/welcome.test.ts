@@ -14,9 +14,9 @@ describe("welcome announcement", () => {
 
   it("does not repeat for the same student standing still", () => {
     expect(shouldAnnounceWelcome({ id: "s1", at: 10_000 }, "s1", 10_500)).toBe(false);
-    expect(shouldAnnounceWelcome({ id: "s1", at: 10_000 }, "s1", 10_000 + WELCOME_REPEAT_MS - 1)).toBe(
-      false,
-    );
+    expect(
+      shouldAnnounceWelcome({ id: "s1", at: 10_000 }, "s1", 10_000 + WELCOME_REPEAT_MS - 1),
+    ).toBe(false);
   });
 
   it("greets the same student again once they have been standing there a while", () => {

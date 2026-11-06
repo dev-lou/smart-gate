@@ -135,7 +135,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             >
               <X className="w-5 h-5" />
             </button>
-            <img src="/isufst-logo.png" alt="ISUFST logo" className="w-11 h-11 rounded-xl object-contain p-0.5 shadow-sm shrink-0 bg-white" />
+            <img
+              src="/isufst-logo.png"
+              alt="ISUFST logo"
+              className="w-11 h-11 rounded-xl object-contain p-0.5 shadow-sm shrink-0 bg-white"
+            />
             <div className="min-w-0">
               <h1 className="text-base font-black tracking-tight text-white leading-tight">
                 Smart Gate

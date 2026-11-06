@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { SINGLE_ZONE, assignFacesToSlots, slotOfFace, standingZoneFor } from "../slotZones";
 
-const box = (
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-): [number, number, number, number] => [x, y, w, h];
+const box = (x: number, y: number, w: number, h: number): [number, number, number, number] => [
+  x,
+  y,
+  w,
+  h,
+];
 
 const zone = SINGLE_ZONE[0];
 

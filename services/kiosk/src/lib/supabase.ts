@@ -175,12 +175,16 @@ export async function downloadStudents(): Promise<number> {
   let guestData: GuestRow[] | null = null;
   const guestRes = await supabase
     .from("guests")
-    .select("id, name, purpose, contact, host_name, valid_until, status, photo_url, is_active, updated_at")
+    .select(
+      "id, name, purpose, contact, host_name, valid_until, status, photo_url, is_active, updated_at",
+    )
     .eq("is_active", true);
   if (!guestRes.error) {
     guestData = guestRes.data;
   } else if ((guestRes.error as { code?: string }).code === "42703") {
-    console.warn("[Supabase] 015 not applied — syncing guests without E-Pass columns. Run database/migrations/015_epass_lockdown_policy.sql.");
+    console.warn(
+      "[Supabase] 015 not applied — syncing guests without E-Pass columns. Run database/migrations/015_epass_lockdown_policy.sql.",
+    );
     const legacy = await supabase
       .from("guests")
       .select("id, name, purpose, photo_url, is_active, updated_at")
@@ -357,7 +361,9 @@ async function insertRowsIndividually(rows: AccessLogRow[]): Promise<boolean> {
     const { error } = await supabase.from("access_logs").insert(payload as typeof row);
     if (!error || isDuplicateKeyError(error)) continue;
     if (!legacyMode && isMissingColumnError(error)) {
-      console.warn("[Supabase] 015 not applied — uploading logs without reason columns. Run database/migrations/015_epass_lockdown_policy.sql.");
+      console.warn(
+        "[Supabase] 015 not applied — uploading logs without reason columns. Run database/migrations/015_epass_lockdown_policy.sql.",
+      );
       legacyMode = true;
       const retry = await supabase.from("access_logs").insert(toLegacyRow(row));
       if (!retry.error || isDuplicateKeyError(retry.error)) continue;

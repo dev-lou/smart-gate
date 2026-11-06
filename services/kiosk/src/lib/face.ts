@@ -188,7 +188,17 @@ export async function getFaceEmbedding(
     const tempCtx = tempCanvas.getContext("2d");
     if (!tempCtx) return null;
 
-    tempCtx.drawImage(video, rect.x, rect.y, rect.w, rect.h, 0, 0, FACE_INPUT_SIZE, FACE_INPUT_SIZE);
+    tempCtx.drawImage(
+      video,
+      rect.x,
+      rect.y,
+      rect.w,
+      rect.h,
+      0,
+      0,
+      FACE_INPUT_SIZE,
+      FACE_INPUT_SIZE,
+    );
 
     // Get pixel data
     const imageData = tempCtx.getImageData(0, 0, FACE_INPUT_SIZE, FACE_INPUT_SIZE);
@@ -333,7 +343,17 @@ export async function getFaceEmbeddingFromCanvas(
     const tempCtx = tempCanvas.getContext("2d");
     if (!tempCtx) return null;
 
-    tempCtx.drawImage(canvas, rect.x, rect.y, rect.w, rect.h, 0, 0, FACE_INPUT_SIZE, FACE_INPUT_SIZE);
+    tempCtx.drawImage(
+      canvas,
+      rect.x,
+      rect.y,
+      rect.w,
+      rect.h,
+      0,
+      0,
+      FACE_INPUT_SIZE,
+      FACE_INPUT_SIZE,
+    );
 
     const imageData = tempCtx.getImageData(0, 0, FACE_INPUT_SIZE, FACE_INPUT_SIZE);
 

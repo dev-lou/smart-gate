@@ -81,7 +81,9 @@ export default function DashboardPage() {
         supabase.from("kiosk_heartbeats").select("updated_at"),
         supabase
           .from("access_logs")
-          .select("id, person_name, success, method, failure_reason, reason_code, decision_note, created_at")
+          .select(
+            "id, person_name, success, method, failure_reason, reason_code, decision_note, created_at",
+          )
           .order("created_at", { ascending: false })
           .limit(6),
       ]).then(([students, activeStudents, logsToday, todaySuccesses, heartbeats, logs]) => {
@@ -225,8 +227,7 @@ export default function DashboardPage() {
                       {log.person_name || "Unknown person"}
                     </p>
                     <p className="text-[11px] font-semibold text-surface-400 uppercase">
-                      {log.method} ·{" "}
-                      {displayDecision(log)}
+                      {log.method} · {displayDecision(log)}
                     </p>
                   </div>
                   <span className="text-xs font-semibold text-surface-400 shrink-0">

@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import {
-  CROP_PADDING,
-  faceTooSmall,
-  selectEnrollmentFace,
-  squarePadRect,
-} from "../faceCrop";
+import { CROP_PADDING, faceTooSmall, selectEnrollmentFace, squarePadRect } from "../faceCrop";
 
-const box = (x: number, y: number, w: number, h: number): [number, number, number, number] => [x, y, w, h];
+const box = (x: number, y: number, w: number, h: number): [number, number, number, number] => [
+  x,
+  y,
+  w,
+  h,
+];
 
 describe("squarePadRect", () => {
   it("squares a tall box and adds context on every side", () => {
@@ -66,10 +66,7 @@ describe("selectEnrollmentFace", () => {
 
   it("rejects a group photo instead of enrolling the biggest stranger", () => {
     const pick = selectEnrollmentFace(
-      [
-        { bbox: box(0.1, 0.1, 0.3, 0.3) },
-        { bbox: box(0.6, 0.2, 0.25, 0.25) },
-      ],
+      [{ bbox: box(0.1, 0.1, 0.3, 0.3) }, { bbox: box(0.6, 0.2, 0.25, 0.25) }],
       1000,
     );
     expect(pick).toEqual({ ok: false, reason: "multiple-faces" });
@@ -77,10 +74,7 @@ describe("selectEnrollmentFace", () => {
 
   it("still accepts a photo with a tiny bystander in the background", () => {
     const pick = selectEnrollmentFace(
-      [
-        { bbox: box(0.2, 0.2, 0.4, 0.4) },
-        { bbox: box(0.8, 0.8, 0.05, 0.05) },
-      ],
+      [{ bbox: box(0.2, 0.2, 0.4, 0.4) }, { bbox: box(0.8, 0.8, 0.05, 0.05) }],
       1000,
     );
     expect(pick.ok).toBe(true);

@@ -154,7 +154,15 @@ export default function GuardPage() {
 
   const [syncing, setSyncing] = useState<SyncStatus>({ status: "idle", message: "" });
   const [recentEnrollments, setRecentEnrollments] = useState<
-    Array<{ name: string; purpose: string; contact: string; host_name: string; valid_until: string; time: string; photos: number }>
+    Array<{
+      name: string;
+      purpose: string;
+      contact: string;
+      host_name: string;
+      valid_until: string;
+      time: string;
+      photos: number;
+    }>
   >([]);
   const [lockdownOn, setLockdownOn] = useState(false);
   const [currentTime, setCurrentTime] = useState("");
@@ -503,7 +511,9 @@ export default function GuardPage() {
       };
       let insertError = (await supabase.from("guests").insert(guestPayload)).error;
       if (insertError && (insertError as { code?: string }).code === "42703") {
-        console.warn("[Guard] 015 not applied — saving guest without E-Pass columns. Run database/migrations/015_epass_lockdown_policy.sql.");
+        console.warn(
+          "[Guard] 015 not applied — saving guest without E-Pass columns. Run database/migrations/015_epass_lockdown_policy.sql.",
+        );
         delete guestPayload.host_name;
         delete guestPayload.valid_until;
         delete guestPayload.status;
@@ -585,7 +595,6 @@ export default function GuardPage() {
       setGuardUser(session?.user ?? null);
       setAuthLoading(false);
     });
-
 
     return () => {
       mounted = false;
@@ -737,7 +746,11 @@ export default function GuardPage() {
       <div className="min-h-screen bg-surface-50 flex items-center justify-center p-4">
         <div className="w-full max-w-sm">
           <div className="text-center mb-8">
-            <img src="/isufst-logo.png" alt="ISUFST logo" className="w-16 h-16 mx-auto mb-4 rounded-2xl object-contain p-0.5 border border-surface-200 shadow-sm bg-white" />
+            <img
+              src="/isufst-logo.png"
+              alt="ISUFST logo"
+              className="w-16 h-16 mx-auto mb-4 rounded-2xl object-contain p-0.5 border border-surface-200 shadow-sm bg-white"
+            />
             <h1 className="text-2xl font-bold text-surface-900">Guard Station</h1>
             <p className="text-surface-500 text-sm font-medium mt-1">
               Authorized enrollment access
@@ -834,7 +847,13 @@ export default function GuardPage() {
       {/* FULLSCREEN camera overlay when active */}
       {activeSlotIndex !== null && (
         <div className="fixed inset-0 z-[60] bg-black">
-          <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover" />
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className="absolute inset-0 w-full h-full object-cover"
+          />
           {/* Detection-only face box (visual helper — no recognition). */}
           <canvas
             ref={faceBoxCanvasRef}
@@ -894,7 +913,11 @@ export default function GuardPage() {
       {/* ─── Unified Institutional Header (No Stacked Bars) ─── */}
       <header className="bg-white rounded-2xl border border-surface-200 shadow-xs p-4 sm:p-5 mb-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div className="flex items-center gap-3.5">
-          <img src="/isufst-logo.png" alt="ISUFST logo" className="w-11 h-11 rounded-xl object-contain p-0.5 shadow-sm shrink-0 bg-white" />
+          <img
+            src="/isufst-logo.png"
+            alt="ISUFST logo"
+            className="w-11 h-11 rounded-xl object-contain p-0.5 shadow-sm shrink-0 bg-white"
+          />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-black text-surface-900 tracking-tight">Guard Station</h1>
@@ -949,7 +972,7 @@ export default function GuardPage() {
                 : "text-surface-600 hover:text-surface-900"
             }`}
           >
-            <BookOpen className="w-4 h-4 text-primary-600" />              <span>Campus Guide</span>
+            <BookOpen className="w-4 h-4 text-primary-600" /> <span>Campus Guide</span>
           </button>
         </nav>
 
@@ -1403,14 +1426,21 @@ export default function GuardPage() {
                       </div>
                       <div>
                         <span className="text-xs text-surface-500 font-medium block">Host</span>
-                        <span className="font-bold text-surface-900">
-                          {form.host_name || "—"}
-                        </span>
+                        <span className="font-bold text-surface-900">{form.host_name || "—"}</span>
                       </div>
                       <div>
-                        <span className="text-xs text-surface-500 font-medium block">Valid until</span>
+                        <span className="text-xs text-surface-500 font-medium block">
+                          Valid until
+                        </span>
                         <span className="font-bold text-surface-900">
-                          {form.valid_until ? new Date(form.valid_until).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) : "Today 6PM"}
+                          {form.valid_until
+                            ? new Date(form.valid_until).toLocaleString("en-US", {
+                                month: "short",
+                                day: "numeric",
+                                hour: "numeric",
+                                minute: "2-digit",
+                              })
+                            : "Today 6PM"}
                         </span>
                       </div>
                       <div>
@@ -1615,9 +1645,15 @@ export default function GuardPage() {
                       ? "bg-rose-50 text-rose-700 border-rose-200"
                       : "bg-emerald-50 text-emerald-700 border-emerald-200"
                   }`}
-                  title={lockdownOn ? "LOCKDOWN ACTIVE — deny all, override only" : "Policy mode — face + guest pass."}
+                  title={
+                    lockdownOn
+                      ? "LOCKDOWN ACTIVE — deny all, override only"
+                      : "Policy mode — face + guest pass."
+                  }
                 >
-                  <Shield className={`w-3.5 h-3.5 ${lockdownOn ? "text-rose-600" : "text-emerald-600"}`} />
+                  <Shield
+                    className={`w-3.5 h-3.5 ${lockdownOn ? "text-rose-600" : "text-emerald-600"}`}
+                  />
                   <span>{lockdownOn ? "LOCKDOWN ACTIVE" : "POLICY ON"}</span>
                 </span>
               </div>
@@ -1780,7 +1816,9 @@ export default function GuardPage() {
             <button
               onClick={() => setActiveTab("guide")}
               className="text-primary-600 hover:text-primary-700 font-bold hover:underline self-start sm:self-auto cursor-pointer"
-            >                View Campus & Camera Guide →
+            >
+              {" "}
+              View Campus & Camera Guide →
             </button>
           </div>
         </div>

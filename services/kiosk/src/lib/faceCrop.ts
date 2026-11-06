@@ -75,8 +75,7 @@ export function faceTooSmall(bbox: readonly [number, number, number, number]): b
 }
 
 export type EnrollmentPick<T> =
-  | { ok: true; face: T }
-  | { ok: false; reason: "no-face" | "multiple-faces" | "face-too-small" };
+  { ok: true; face: T } | { ok: false; reason: "no-face" | "multiple-faces" | "face-too-small" };
 
 /**
  * Choose the one face an enrollment photo is allowed to contribute.

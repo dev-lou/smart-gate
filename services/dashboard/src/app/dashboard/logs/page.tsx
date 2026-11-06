@@ -172,12 +172,20 @@ export default function LogsPage() {
   // 008 entries-today: distinct persons granted today (entry-only, no IN/OUT).
   const entriesToday = useMemo(() => {
     const seen = new Map<string, { name: string; type: string }>();
-    for (const g of todayGrants as unknown as { person_name: string | null; person_type: string | null }[]) {
+    for (const g of todayGrants as unknown as {
+      person_name: string | null;
+      person_type: string | null;
+    }[]) {
       const key = (g.person_name || "Unknown").toLowerCase();
-      if (!seen.has(key)) seen.set(key, { name: g.person_name || "Unknown", type: g.person_type || "" });
+      if (!seen.has(key))
+        seen.set(key, { name: g.person_name || "Unknown", type: g.person_type || "" });
     }
     const all = [...seen.values()];
-    return { total: all.length, students: all.filter((p) => p.type !== "guest").length, guests: all.filter((p) => p.type === "guest").length };
+    return {
+      total: all.length,
+      students: all.filter((p) => p.type !== "guest").length,
+      guests: all.filter((p) => p.type === "guest").length,
+    };
   }, [todayGrants]);
 
   // ─── Client-side name search over the loaded (capped) rows ───
@@ -298,7 +306,8 @@ export default function LogsPage() {
             Access Logs
           </h1>
           <p className="text-surface-500 font-medium text-sm mt-1">
-            {logs.length} events in selected period · {entriesToday.total} entered today ({entriesToday.students} students, {entriesToday.guests} guests)
+            {logs.length} events in selected period · {entriesToday.total} entered today (
+            {entriesToday.students} students, {entriesToday.guests} guests)
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -362,10 +371,15 @@ export default function LogsPage() {
           >
             <Calendar className="w-4 h-4 text-surface-400" />
             {RANGES.find((r) => r.value === dateRange)?.label}
-            <ChevronDown className={`w-4 h-4 text-surface-400 transition-transform ${rangeOpen ? "rotate-180" : ""}`} />
+            <ChevronDown
+              className={`w-4 h-4 text-surface-400 transition-transform ${rangeOpen ? "rotate-180" : ""}`}
+            />
           </button>
           {rangeOpen && (
-            <div role="listbox" className="absolute right-0 z-30 mt-2 w-44 bg-white border border-surface-200 rounded-xl shadow-lg overflow-hidden py-1">
+            <div
+              role="listbox"
+              className="absolute right-0 z-30 mt-2 w-44 bg-white border border-surface-200 rounded-xl shadow-lg overflow-hidden py-1"
+            >
               {RANGES.map((r) => (
                 <button
                   key={r.value}
@@ -521,7 +535,7 @@ export default function LogsPage() {
                       {log.confidence ? `${(log.confidence * 100).toFixed(0)}%` : "—"}
                     </td>
                     <td className="table-cell">
-                      {(log.reason_code || log.failure_reason) ? (
+                      {log.reason_code || log.failure_reason ? (
                         <span className="px-2 py-1 rounded-md text-[11px] font-black bg-surface-100 text-surface-700 font-mono whitespace-nowrap">
                           {log.reason_code || "—"}
                         </span>
