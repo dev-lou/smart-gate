@@ -65,7 +65,7 @@ const MATCH_THRESHOLD = 0.58;
 /** Nothing below this is trusted, whatever the dashboard setting says. */
 export const MIN_MATCH_THRESHOLD = 0.5;
 /** Winner must beat the runner-up by this much before a name is shown. */
-const AMBIGUOUS_GAP = 0.08;
+export const AMBIGUOUS_GAP = 0.08;
 const MODEL_BASE_URL = "https://storage.googleapis.com/mediapipe-models";
 // ✅ Updated 2026 model URLs — verified working
 // MediaPipe face detector:

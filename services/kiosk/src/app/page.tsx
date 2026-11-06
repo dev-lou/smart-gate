@@ -14,6 +14,7 @@ import {
 
 import { useEffect, useRef, useState } from "react";
 import {
+  AMBIGUOUS_GAP,
   initFaceDetector,
   initFaceRecognizer,
   detectFaces,
@@ -28,6 +29,12 @@ import {
   type MatchResult,
 } from "@/lib/face";
 import {
+  checkUniform,
+  initUniformDetector,
+  torsoRegion,
+  type UniformCheckResult,
+} from "@/lib/uniform";
+import {
   connectToGate,
   tryAutoConnect,
   disconnectGate,
@@ -40,6 +47,7 @@ import {
   type GateTransport,
 } from "@/lib/gate";
 import {
+  MIN_FACE_SAMPLES,
   LAST_RESULT_HOLD_MS,
   NOTICE_WINDOW_MS,
   NOTICE_ABSENCE_CLEAR_MS,
@@ -129,7 +137,7 @@ type KioskState =
  * standing at the terminal can see what the AI is doing right now:
  *   searching → looking for a face
  *   face      → a face is in frame, checking identity
- *   uniform   → identity matched, reading the uniform
+ *   verify    → identity matched, reading the uniform (amber torso box)
  *   done      → a verdict was reached (grant/deny card takes over)
  */
 type ScanStep = "searching" | "face" | "verify" | "done";
@@ -154,6 +162,8 @@ type SlotCard = {
   name: string;
   department: string;
   confidence: number;
+  /** Uniform line shown under the name (null when the check was skipped). */
+  uniform?: string | null;
 } | null;
 
 /** What one standing position is reporting right now. */
@@ -373,6 +383,10 @@ function PolicyReadout({
     text = "Verifying — hold still";
     tone = "text-blue-700";
     pulse = true;
+  } else if (scanStep === "verify") {
+    text = "Reading uniform — hold still";
+    tone = "text-amber-700";
+    pulse = true;
   } else if (scanStep === "done") {
     text = "Policy: face + pass check";
     tone = "text-surface-500";
@@ -449,6 +463,8 @@ export default function KioskPage() {
   const [confirmProgress, setConfirmProgress] = useState(0);
   const [lockdownActive, setLockdownActive] = useState(false);
   const [lockdownReason, setLockdownReason] = useState("");
+  /** Mirror of the synced `uniform_detection_enabled` setting, for the panel. */
+  const [uniformEnforced, setUniformEnforced] = useState(true);
   /**
    * What to tell someone whose decision is already in the books.
    *
@@ -561,12 +577,15 @@ export default function KioskPage() {
     lockdownReason: string;
     /** School-ID QR: accepted as the fallback when the face is not recognised. */
     allowQr: boolean;
+    /** 019 uniform: when true a student without their course uniform is denied. */
+    uniformEnabled: boolean;
   }>({
     matchThreshold: 0.58,
     gateOpenDuration: 5,
     lockdownMode: false,
     lockdownReason: "",
     allowQr: true,
+    uniformEnabled: true,
   });
   const settingsLoadedRef = useRef(false);
 
@@ -582,6 +601,16 @@ export default function KioskPage() {
   // (so the guide animates) while inference only runs every 3rd frame.
   const lastFacesRef = useRef<FaceResult[]>([]);
   const lastFaceAtRef = useRef(0);
+  /**
+   * Torso band currently being read by the uniform model (normalized video
+   * coords + expiry). Set just before `await checkUniform` and cleared right
+   * after, so the overlay can draw the "what I am reading" box while YOLO
+   * runs. Refs only — the rAF loop reads it without re-rendering.
+   */
+  const uniformScanRef = useRef<{
+    bbox: [number, number, number, number];
+    until: number;
+  } | null>(null);
   const lastRecognizedAtRef = useRef(0);
   const processingRef = useRef(false); // Prevents concurrent face processing
   const photoProcessingRef = useRef(false); // 🔴 FIX BUG #2: Mutex for processStudentPhotos
@@ -624,6 +653,7 @@ export default function KioskPage() {
     person: EnrolledFace;
     confidence: number;
     isGuest: boolean;
+    uniformDetail?: string | null;
   } | null>(null);
   /**
    * Three-second matching window per standing position.
@@ -820,8 +850,7 @@ export default function KioskPage() {
       setKioskState("loading_models");
       setStatusMessage("Loading face detection model...");
 
-      // 1. Load AI models — face only. Uniform vision was retired, so boot
-      // stays fast with no second model to download.
+      // 1. Load AI models — face, recognition, then the uniform torso reader.
       const faceDetectorLoaded = await initFaceDetector().catch(() => false);
 
       if (!faceDetectorLoaded) {
@@ -835,6 +864,21 @@ export default function KioskPage() {
       if (!recognizerLoaded) {
         console.warn("Face recognizer not available, running in detection-only mode");
       }
+
+      // 1b. Uniform model — the CLIP zero-shot torso reader for the dress check.
+      // Deliberately NOT awaited. It is an ~89 MB download on the first run, and
+      // blocking boot on it held the camera and the face pipeline behind it, so
+      // the terminal looked dead (camera on screen, no face detected). It loads
+      // in the background now; checkUniform() awaits the in-flight load if a
+      // student arrives before it finishes, so enforcement never silently
+      // waves anyone through.
+      void initUniformDetector()
+        .then((loaded) => {
+          if (!loaded) {
+            console.warn("[Kiosk] Uniform model unavailable — uniform checks deny until it loads");
+          }
+        })
+        .catch(() => {});
 
       // 2. Hardware first. The gate link, the servo and the physical button
       //    must work whether or not a webcam exists — hardware testing at the
@@ -1554,9 +1598,22 @@ export default function KioskPage() {
 
     const best = bestFaceInWindow(window);
     const bestPerson = best ? (enrolledRef.current.find((s) => s.id === best.id) ?? null) : null;
-    if (!best || !bestPerson || best.score < settingsRef.current.matchThreshold) {
-      // Three seconds of evidence and nobody cleared the bar: this is an
-      // unrecognised visitor, and the unknown-dwell card owns the screen.
+    // Naming someone takes three things: enough reads to be evidence, a score
+    // over the threshold, and a clear lead over the next-closest profile. The
+    // lead was computed nowhere — "ambiguous" was returned and never read — so
+    // a lookalike, or a second enrolled student behind the one at the kiosk, won
+    // the window by a hair and the card showed the wrong name.
+    const tooClose =
+      best !== null && best.runnerUp >= 0 && best.score - best.runnerUp < AMBIGUOUS_GAP;
+    if (
+      !best ||
+      !bestPerson ||
+      best.samples < MIN_FACE_SAMPLES ||
+      best.score < settingsRef.current.matchThreshold ||
+      tooClose
+    ) {
+      // Evidence ran out without a clear winner: this is an unrecognised
+      // visitor, and the unknown-dwell card owns the screen.
       if (!cardHoldActive) slotCardsRef.current[slot] = null;
       return;
     }
@@ -1642,9 +1699,37 @@ export default function KioskPage() {
     // Guests are flagged by their uniform_type marker (data convention only).
     const isGuestMatch = match.matched && match.person?.uniform_type === 'guest';
 
-    // Determine access (016 policy: lockdown > guest expiry > face+policy).
-    // Uniform vision is retired: a face match plus a live guest pass (or no
-    // pass needed for students) is the whole policy.
+    // Uniform check — students only, guests skip it (no uniform requirement).
+    // The torso band under the named face goes to the YOLO model and the
+    // detected course family must match theirs (any CICI uniform verifies a
+    // CICI student). A missing or failing detector fails closed — waving
+    // everyone through would make the admin toggle a lie.
+    let uniformCheck: UniformCheckResult | null = null;
+    if (match.matched && match.person && settingsRef.current.uniformEnabled && !isGuestMatch) {
+      // Publish the torso band being read so the overlay draws the "what I am
+      // reading" box while YOLO runs, and say so on the status line. Cleared
+      // the moment the check settles (grant/deny branches overwrite the text).
+      const vw = video.videoWidth || 640;
+      const vh = video.videoHeight || 640;
+      const band = torsoRegion(face.bbox, { videoWidth: vw, videoHeight: vh });
+      uniformScanRef.current = {
+        bbox: [band.x / vw, band.y / vh, band.width / vw, band.height / vh],
+        until: Date.now() + 10000,
+      };
+      setStatusMessage("Reading uniform…");
+      uniformCheck = await checkUniform(
+        video,
+        face.bbox,
+        match.person.uniform_type ?? "",
+        canvas,
+      ).catch(
+        (): UniformCheckResult => ({ ok: false, confidence: 0, detail: "Uniform detector unavailable" }),
+      );
+      uniformScanRef.current = null;
+    }
+    const uniformFailed = uniformCheck !== null && uniformCheck.ok !== true;
+
+    // Determine access (lockdown > guest expiry > uniform > face+policy).
     const locked = settingsRef.current.lockdownMode;
     let guestExpired = false;
     let guestExpiryLabel = '';
@@ -1660,7 +1745,12 @@ export default function KioskPage() {
         ? { code: 'LOCKDOWN_ACTIVE', note: settingsRef.current.lockdownReason ? `Campus lockdown — ${settingsRef.current.lockdownReason}` : 'Campus lockdown — see guard' }
         : guestExpired
           ? { code: 'GUEST_EXPIRED', note: `Guest pass expired${guestExpiryLabel ? ` ${guestExpiryLabel}` : ''} — see guard to renew` }
-          : null;
+          : uniformFailed
+            ? {
+                code: uniformCheck!.detectedType ? 'WRONG_UNIFORM' : 'NO_UNIFORM',
+                note: uniformCheck!.detail,
+              }
+            : null;
     const accessGranted = match.matched && !denyReason;
 
     if (accessGranted) {
@@ -1678,6 +1768,7 @@ export default function KioskPage() {
         person: match.person!,
         confidence: match.confidence,
         isGuest: isGuestMatch,
+        uniformDetail: uniformCheck?.detail ?? null,
       });
       setSlotPhaseAt(slot, "granted");
       // Name + course for the card, taken from the identity that was decided.
@@ -1686,6 +1777,7 @@ export default function KioskPage() {
         name: match.person!.name,
         department: match.person!.department ?? "",
         confidence: match.confidence,
+        uniform: uniformCheck?.detail ?? null,
       };
 
       // Open gate (Wi-Fi ESP32 or USB Arduino)
@@ -1753,7 +1845,9 @@ export default function KioskPage() {
             const exp = p.valid_until ? ` valid until ${new Date(p.valid_until).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "";
             return `Guest pass${p.host_name ? ` host ${p.host_name}` : ""}${exp} — face verified`;
           })()
-          : "Face verified — policy check passed";
+          : uniformCheck
+            ? `Uniform verified — ${uniformCheck.detail}`
+            : "Granted — uniform check disabled in settings";
         await addLog({
           person_id: match.person!.id,
           person_name: match.person!.name,
@@ -1763,6 +1857,7 @@ export default function KioskPage() {
           success: true,
           confidence: match.confidence,
           failure_reason: passNote,
+          uniform_ok: isGuestMatch ? null : (uniformCheck?.ok ?? null),
           reason_code: isGuestMatch ? "GUEST_PASS_VALID" : "POLICY_PASS",
           decision_note: passNote,
           client_id: "kiosk-01",
@@ -1815,6 +1910,7 @@ export default function KioskPage() {
         person: match.person!,
         confidence: match.confidence,
         isGuest: false,
+        uniformDetail: uniformFailed ? (uniformCheck?.detail ?? null) : null,
       });
       setSlotPhaseAt(slot, "denied", detail);
       cardHoldUntilRef.current = Date.now() + RESULT_CARD_MIN_HOLD_MS;
@@ -1850,6 +1946,7 @@ export default function KioskPage() {
           method: "face",
           success: false,
           confidence: match.confidence,
+          uniform_ok: code === "WRONG_UNIFORM" || code === "NO_UNIFORM" ? false : null,
           failure_reason: detail,
           reason_code: code,
           decision_note: detail,
@@ -1898,7 +1995,9 @@ export default function KioskPage() {
    *
    * Shows what the AI sees, in order, so nobody has to guess whether the
    * terminal is working:
-   *   1. no face  → animated face oval + "position your face" guidance
+   *   1. framing  → ONE guide at a time: a big oval in the centre until the
+   *                 face is identified, then the oval clears and a wide
+   *                 rectangle over the uniform takes over (never both at once)
    *   2. face     → reticle around the detected face + detection confidence,
    *                 with a sweeping scan line while it works
    * Reads refs only (this runs inside the rAF loop) and is privacy-safe:
@@ -1928,10 +2027,19 @@ export default function KioskPage() {
 
     const unit = W / 100; // scale everything off the frame width
 
-    // ── 1. The standing position ──
-    // Always visible while scanning. Only a face centred inside the oval is
-    // read, so a queue behind the student cannot change the answer; the oval
-    // names the student standing in it — name and course once confirmed.
+    // ── 1. Where to stand — one guide at a time ──
+    // The kiosk shows a single framing guide, in the order the checks run:
+    //   • not identified yet → ONE big oval in the centre, face only.
+    //   • face identified    → the oval has done its job and clears away, and
+    //                          a wide rectangle over the uniform takes over.
+    // Both guides at once fought for the same screen space — the FACE and
+    // UNIFORM chips stacked on top of each other and the two dashed edges
+    // crossed the student's face. Swapping them leaves exactly one
+    // instruction on screen and says what the terminal is doing right now.
+    //
+    // Looks only: the acceptance rule is unchanged (face centre inside the
+    // zone ellipse in slotZones), so gating, cooldowns and unit tests are
+    // untouched — only the painted guides changed.
     if (verifying) {
       for (const zone of zonesRef.current) {
         const card = slotCardsRef.current[zone.id];
@@ -1939,54 +2047,117 @@ export default function KioskPage() {
         const cy = zone.cy * H;
         const rx = zone.rx * W;
         const ry = zone.ry * H;
-        const occupied = lastFacesRef.current.some((f) => slotOfFace(f.bbox, zonesRef.current) === zone.id);
+        const liveFace = lastFacesRef.current.find(
+          (f) => slotOfFace(f.bbox, zonesRef.current) === zone.id,
+        );
+        const occupied = !!liveFace;
         const rgb = card ? "16, 185, 129" : occupied ? "96, 165, 250" : "255, 255, 255";
+        const torsoScan = uniformScanRef.current;
+        const reading = !!torsoScan && now < torsoScan.until;
+        const labelSize = Math.max(11, unit * 1.5);
 
-        // Dim everything OUTSIDE the oval. A white dashed outline on its own
-        // disappeared against a bright wall — the lobby is not a dark room — so
-        // the standing spot is lit instead of merely outlined: the scrim gives
-        // the interior contrast on any scene, and the edge sits on top of it.
-        ctx.save();
-        ctx.beginPath();
-        ctx.rect(0, 0, W, H);
-        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-        ctx.fillStyle = card ? "rgba(8, 15, 30, 0.18)" : "rgba(8, 15, 30, 0.32)";
-        ctx.fill("evenodd");
-        ctx.restore();
+        // Identity in hand (a named card) or the uniform read running means the
+        // face stage is over: drop the oval, show the uniform box. A raw
+        // per-frame match is deliberately NOT enough — one lucky frame swapped
+        // the guide to UNIFORM while the card still read UNKNOWN FACE. When the
+        // identity is lost the card clears, so the oval comes straight back.
+        const uniformPhase = !!card || reading;
 
-        // Tall oval, like a person: a head and shoulders are taller than they
-        // are wide. Drawn twice — a dark halo so the light edge never melts into
-        // a pale background, then the moving dashed edge at full opacity.
-        ctx.save();
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-        ctx.lineWidth = Math.max(6, unit * 1.5);
-        ctx.strokeStyle = "rgba(8, 15, 30, 0.45)";
-        ctx.stroke();
+        if (!uniformPhase) {
+          // ── Oval: the standing spot, face only ──
+          // Dim everything OUTSIDE the oval. A white dashed outline on its own
+          // disappeared against a bright wall — the lobby is not a dark room —
+          // so the standing spot is lit instead of merely outlined: the scrim
+          // gives the interior contrast on any scene, and the edge sits on top.
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(0, 0, W, H);
+          ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+          ctx.fillStyle = "rgba(8, 15, 30, 0.32)";
+          ctx.fill("evenodd");
+          ctx.restore();
 
-        ctx.setLineDash(card ? [] : [unit * 2.2, unit * 1.9]);
-        ctx.lineDashOffset = -((now / 26) % 1000);
-        ctx.lineWidth = Math.max(3, unit * 0.62);
-        ctx.strokeStyle = `rgba(${rgb}, 1)`;
-        ctx.beginPath();
-        ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.restore();
+          // Tall oval, like a person: a head and shoulders are taller than they
+          // are wide. Drawn twice — a dark halo so the light edge never melts
+          // into a pale background, then the moving dashed edge at full
+          // opacity.
+          ctx.save();
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+          ctx.lineWidth = Math.max(6, unit * 1.5);
+          ctx.strokeStyle = "rgba(8, 15, 30, 0.45)";
+          ctx.stroke();
 
-        // An empty oval still says what it wants, so the screen never looks
-        // like one working terminal beside a blank one. The pill is dark because
-        // drawChip() writes white text — a white pill would be invisible on the
-        // idle (white) oval colour.
-        if (!card) {
+          ctx.setLineDash([unit * 2.2, unit * 1.9]);
+          ctx.lineDashOffset = -((now / 26) % 1000);
+          ctx.lineWidth = Math.max(3, unit * 0.62);
+          ctx.strokeStyle = `rgba(${rgb}, 1)`;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+
+          // The pill is dark because drawChip() writes white text — a white
+          // pill would be invisible on the idle (white) oval colour.
           drawChip(
             ctx,
             cx,
-            cy + ry * 0.74,
+            Math.min(cy + ry * 0.74, H * 0.7),
             occupied ? "HOLD STILL" : "STAND HERE",
             occupied ? rgb : "30, 41, 59",
             "center",
-            Math.max(11, unit * 1.5),
+            labelSize,
           );
+        } else {
+          // ── Uniform rectangle: lower middle, shoulder to waist ──
+          // Anchored to the live face's chin when there is one, so the box
+          // lands on the torso actually in frame; falls back to the zone
+          // geometry so the guide still shows for a decision made a moment
+          // ago (the face may already have stepped away).
+          const chinY = liveFace ? (liveFace.bbox[1] + liveFace.bbox[3]) * H : cy + ry * 0.2;
+          const faceW = liveFace ? liveFace.bbox[2] * W : zone.rx * W;
+          const torsoW = Math.min(W * 0.72, Math.max(faceW * 2.6, zone.rx * W * 1.7));
+          const torsoX = cx - torsoW / 2;
+          const torsoY = Math.max(cy - ry * 0.1, Math.min(chinY - unit * 0.5, H * 0.62));
+          const torsoH = Math.max(unit * 9, H * 0.95 - torsoY);
+          const corner = unit * 1.6;
+
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(0, 0, W, H);
+          roundRectPath(ctx, torsoX, torsoY, torsoW, torsoH, corner);
+          ctx.fillStyle = card ? "rgba(8, 15, 30, 0.18)" : "rgba(8, 15, 30, 0.32)";
+          ctx.fill("evenodd");
+          ctx.restore();
+
+          ctx.save();
+          roundRectPath(ctx, torsoX, torsoY, torsoW, torsoH, corner);
+          ctx.lineWidth = Math.max(6, unit * 1.5);
+          ctx.strokeStyle = "rgba(8, 15, 30, 0.45)";
+          ctx.stroke();
+
+          ctx.setLineDash(card ? [] : [unit * 2.2, unit * 1.9]);
+          ctx.lineDashOffset = -((now / 26) % 1000);
+          ctx.lineWidth = Math.max(3, unit * 0.62);
+          ctx.strokeStyle = `rgba(${rgb}, 1)`;
+          roundRectPath(ctx, torsoX, torsoY, torsoW, torsoH, corner);
+          ctx.stroke();
+          ctx.restore();
+
+          // What this box is for, then what to do about it. Guide names, never
+          // an identity — same privacy rule as the face chips.
+          drawChip(ctx, torsoX, torsoY - unit * 0.6, "UNIFORM", rgb, "left", labelSize);
+          if (!card) {
+            drawChip(
+              ctx,
+              cx,
+              Math.min(torsoY + torsoH * 0.86, H * 0.74),
+              reading ? "READING UNIFORM…" : occupied ? "HOLD STILL" : "STAND HERE",
+              reading ? "245, 158, 11" : occupied ? rgb : "30, 41, 59",
+              "center",
+              labelSize,
+            );
+          }
         }
       }
     }
@@ -2055,6 +2226,27 @@ export default function KioskPage() {
         ctx.lineTo(bx + bw, sweepY);
         ctx.stroke();
       }
+    }
+
+    // ── 3. Uniform read band ──
+    // While YOLO is reading the torso, bracket the exact band being judged in
+    // amber, so the student can see the check is live and whether the uniform
+    // is actually inside the read area. The "READING UNIFORM…" wording lives on
+    // the uniform box's own pill (step 1) — two chips on one band collided.
+    const uscan = uniformScanRef.current;
+    if (verifying && uscan && now < uscan.until) {
+      const [ux, uy, uw, uh] = uscan.bbox;
+      drawBrackets(
+        ctx,
+        ux * W,
+        uy * H,
+        uw * W,
+        uh * H,
+        "245, 158, 11",
+        0.95,
+        Math.max(3, unit * 0.55),
+        Math.min(uw * W, uh * H) * 0.18,
+      );
     }
   }
 
@@ -2442,6 +2634,13 @@ export default function KioskPage() {
       const qrAllowed = (qrSetting?.value ?? "true") !== "false";
       settingsRef.current.allowQr = qrAllowed;
       setAllowQr(qrAllowed);
+
+      // 019 uniform: the dashboard toggle; defaults ON so a kiosk that has
+      // never synced still enforces the dress check once the model loads.
+      const uniformSetting = settings.find((s) => s.key === "uniform_detection_enabled");
+      const enforced = (uniformSetting?.value ?? "true") !== "false";
+      settingsRef.current.uniformEnabled = enforced;
+      setUniformEnforced(enforced);
 
       // Gate open window — the dashboard has always written this row, but the
       // kiosk never read it and hardcoded 5s instead.
@@ -2990,7 +3189,10 @@ export default function KioskPage() {
             {gateConnected && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />}
           </div>
 
-          {/* Policy indicator (015): uniform retired — show PASS/POLICY + LOCKDOWN. Offline queue count rides the wifi pill tooltip + admin panel. */}
+          {/* Policy indicator (015/019): uniform vision is live again and enforced
+              when the dashboard toggle is on — show what is actually running,
+              not a hardcoded "retired". Offline queue count rides the wifi pill
+              tooltip + admin panel. */}
           <div
             className={`flex glass-pill px-2.5 sm:px-3 py-2.5 items-center gap-1.5 shadow-sm border-white/40 ${lockdownActive ? "bg-rose-50/95 border-rose-200" : "bg-white/90"}`}
             title={
@@ -3218,13 +3420,44 @@ export default function KioskPage() {
         </div>
       )}
 
+      {/* ─── Big grant card ──────────────────────────────── */}
+      {/* The moment a student passes the uniform check the whole screen says so:
+          name, course, and the uniform line that authorized it. It lives on the
+          same 5s card timer as everything else (RESULT_CARD_MIN_HOLD_MS) and
+          unmounts when the card clears, so it never sits over the next arrival. */}
+      {kioskState === "granted" && slotPhases[0] === "granted" && slotCardsRef.current[0] && (
+        <div className="absolute inset-0 z-40 pointer-events-none flex items-center justify-center px-4">
+          <div className="w-full max-w-lg rounded-3xl border-4 border-emerald-400 bg-emerald-50/95 backdrop-blur-md shadow-2xl px-5 py-7 sm:px-8 sm:py-9 text-center">
+            <div className="mx-auto flex h-14 w-14 sm:h-16 sm:w-16 items-center justify-center rounded-full bg-emerald-500 shadow-lg">
+              <CheckCircle2 className="h-9 w-9 sm:h-10 sm:w-10 text-white" strokeWidth={3} />
+            </div>
+            <p className="mt-3 text-xs sm:text-sm font-black tracking-[0.3em] text-emerald-700">
+              ACCESS GRANTED
+            </p>
+            <p className="mt-2 text-2xl sm:text-4xl font-black leading-tight tracking-tight text-emerald-950">
+              {slotCardsRef.current[0]?.name}
+            </p>
+            <p className="mt-1 text-sm sm:text-base font-bold text-emerald-800 truncate">
+              {slotCardsRef.current[0]?.department || "Student"}
+            </p>
+            {slotCardsRef.current[0]?.uniform ? (
+              <p className="mx-auto mt-3 max-w-md rounded-xl bg-white/80 px-3 py-2 text-xs sm:text-sm font-semibold leading-snug text-emerald-900">
+                {slotCardsRef.current[0]?.uniform}
+              </p>
+            ) : null}
+            <p className="mt-4 text-[10px] sm:text-[11px] font-black uppercase tracking-[0.22em] text-emerald-600">
+              {gateSecondsLeft !== null && gateSecondsLeft > 0
+                ? `Gate open · ${gateSecondsLeft}s`
+                : "Gate clearing"}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* ─── Bottom Status Panel (Centered, High Legibility) ────── */}
       {/* One panel under the one oval, capped in width so a 1920 px kiosk does
           not stretch a two-line result across the whole screen. */}
-      {(kioskState === "ready" ||
-        kioskState === "scanning" ||
-        kioskState === "granted" ||
-        kioskState === "denied") && (
+      {(kioskState === "ready" || kioskState === "scanning" || kioskState === "denied") && (
         <div
           className="absolute inset-x-0 z-30 pointer-events-none grid grid-cols-1 gap-2 sm:gap-6 px-3 sm:px-8 max-w-xl mx-auto"
           style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}
@@ -3270,6 +3503,11 @@ export default function KioskPage() {
                         {card.department || "Student"}
                         {card.confidence > 0 && ` · ${Math.round(card.confidence * 100)}%`}
                       </p>
+                      {card.uniform ? (
+                        <p className="text-[11px] sm:text-xs font-semibold opacity-80 truncate">
+                          {card.uniform}
+                        </p>
+                      ) : null}
                     </>
                   ) : (
                     <p className="text-[11px] sm:text-sm font-semibold opacity-80 leading-snug">
@@ -3451,11 +3689,17 @@ export default function KioskPage() {
             </div>
             <div className="flex justify-between">
               <span className="text-surface-500">Uniform vision</span>
-              <span className="font-bold text-surface-400">RETIRED</span>
+              <span
+                className={`font-bold ${uniformEnforced ? "text-green-600" : "text-surface-400"}`}
+              >
+                {uniformEnforced ? "ON — REQUIRED" : "OFF"}
+              </span>
             </div>
             <div className="flex justify-between">
               <span className="text-surface-500">Entry policy</span>
-              <span className="font-bold text-green-600">FACE + PASS</span>
+              <span className={`font-bold ${uniformEnforced ? "text-green-600" : "text-surface-400"}`}>
+                {uniformEnforced ? "FACE + UNIFORM" : "FACE + PASS"}
+              </span>
             </div>
             <div className="flex justify-between">
               <span className="text-surface-500">Last sync</span>

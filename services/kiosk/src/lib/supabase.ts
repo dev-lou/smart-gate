@@ -288,6 +288,7 @@ interface AccessLogRow {
   method: string;
   success: boolean;
   confidence: number | null;
+  uniform_ok: boolean | null;
   failure_reason: string | null;
   gate_state: string | null;
   device_timestamp: string;
@@ -338,10 +339,11 @@ function isMissingColumnError(error: { code?: string } | null): boolean {
  * failure_reason; reason_code/decision_note/client_id apply after 015.
  */
 function toLegacyRow(row: AccessLogRow): Record<string, unknown> {
-  const { reason_code: _rc, decision_note: _dn, client_id: _cid, ...legacy } = row;
+  const { reason_code: _rc, decision_note: _dn, client_id: _cid, uniform_ok: _uo, ...legacy } = row;
   void _rc;
   void _dn;
   void _cid;
+  void _uo;
   return legacy;
 }
 
@@ -403,6 +405,7 @@ export async function uploadLogs(): Promise<number> {
       device_timestamp: log.device_timestamp,
       // Server-side idempotency key; migration 006 adds the indexed column.
       sync_id: log.sync_id,
+      uniform_ok: (log as { uniform_ok?: boolean | null }).uniform_ok ?? null,
       reason_code: (log as { reason_code?: string | null }).reason_code ?? null,
       decision_note: (log as { decision_note?: string | null }).decision_note ?? null,
       client_id: (log as { client_id?: string | null }).client_id ?? null,

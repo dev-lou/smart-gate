@@ -48,6 +48,8 @@ export interface StoredLog {
   success: boolean;
   confidence: number | null;
   failure_reason: string | null;
+  /** 019 uniform: null when the check was skipped (guest / disabled). */
+  uniform_ok?: boolean | null;
   /** 015 explainable decisions + offline client id */
   reason_code?: string | null;
   decision_note?: string | null;

@@ -13,7 +13,7 @@
  */
 
 const CACHE_PREFIX = "smart-gate-kiosk";
-const CACHE_VERSION = "v3";
+const CACHE_VERSION = "v4";
 const APP_CACHE = `${CACHE_PREFIX}-${CACHE_VERSION}-app`;
 const ASSET_CACHE = `${CACHE_PREFIX}-${CACHE_VERSION}-assets`;
 const MODEL_CACHE = `${CACHE_PREFIX}-${CACHE_VERSION}-models`;
@@ -33,6 +33,11 @@ const STATIC_ASSETS = [
 // 🛡️ AI model URLs to cache for offline face recognition + detection
 // These are fetched in the `fetch` handler and cached on first access
 const MODEL_URLS = [
+  // Local ONNX under /models/ — the uniform CLIP encoder is ~89 MB. Without
+  // this rule it fell through to the network-first branch and the browser
+  // re-downloaded all 89 MB on every reload. Cache-first here; bump
+  // CACHE_VERSION whenever a model file changes.
+  "/models/",
   // ArcFace ONNX model (Hugging Face - WePrompt/buffalo_sc)
   "huggingface.co/WePrompt/buffalo_sc",
   // MediaPipe face detector (Google Storage)

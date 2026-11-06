@@ -59,6 +59,12 @@ const SETTING_META: Record<
     description:
       "Fallback entry: when a student's face cannot be recognised, the kiosk opens for the school-ID QR that belongs to them. A recognised face still opens on its own. Turn OFF to require the face alone.",
   },
+  uniform_detection_enabled: {
+    label: "Require Uniform",
+    type: "boolean",
+    description:
+      "Enforce the dress check at the gate before granting access. When ON the kiosk reads the student's torso with the uniform model and denies entry when no uniform of their course is detected. Guests always skip this check. Turn OFF to grant on face match alone.",
+  },
   lockdown_mode: {
     label: "Campus Lockdown",
       type: "boolean",
@@ -103,6 +109,7 @@ const KNOWN_KEYS = Object.keys(SETTING_META);
  */
 const SETTING_DEFAULTS: Record<string, string> = {
   allow_qr_entry: "true",
+  uniform_detection_enabled: "true",
 };
 
 export default function SettingsPage() {

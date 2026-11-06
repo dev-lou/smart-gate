@@ -1,9 +1,9 @@
 /**
- * Inference Worker Manager (face lane only)
- * ========================================
- * Face-embedding inference runs in a dedicated worker so the main thread
- * stays free for UI rendering. Uniform vision was retired: there is no
- * second lane and no YOLO model.
+ * Inference Worker Manager (shared face + uniform worker)
+ * ======================================================
+ * Face-embedding and YOLO uniform inference run in a dedicated worker so
+ * the main thread stays free for UI rendering. One worker, two lanes:
+ * face embeddings and uniform torso reads share the session queue.
  *
  * Usage:
  *   import { sendToWorker } from "./workerManager";

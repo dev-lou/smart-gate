@@ -26,17 +26,7 @@ const VERBOSE = process.argv.includes("--verbose");
 
 // ─── Expected state (mirrors the migrations + kiosk code) ────
 
-const EXPECTED_UNIFORM_CLASSES = [
-  "cbmsd_chef_male_uniform",
-  "cbmsd_universal_male_uniform",
-  "cici_blazer_uniform",
-  "cici_female_uniform",
-  "cici_male_uniform",
-  "coag_female_uniform",
-  "coag_male_uniform",
-  "education_female_uniform",
-  "education_male_uniform",
-];
+const EXPECTED_UNIFORM_CLASSES = ["cict_male_uniform"];
 
 // services/kiosk/src/lib/uniform.ts → familyOf()
 const COURSE_MARKERS = ["cbmsd", "cici", "coag", "education"];

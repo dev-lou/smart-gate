@@ -8,7 +8,9 @@
  *
  * Messages handled:
  *   - init_face: Load MobileFaceNet ONNX model
+ *   - init_yolo: Load YOLO11n uniform ONNX model
  *   - get_embedding: Compute face embedding from pixel data
+ *   - yolo_infer: Run uniform detection on torso pixel data
  *
  * Each message is async and responds with the same id for correlation.
  */
@@ -49,13 +51,18 @@ installWorkerConsoleFilter();
 // ─── Types ──────────────────────────────────────────────────
 
 interface WorkerMessage {
-  type: "init_face" | "get_embedding";
+  type: "init_face" | "init_yolo" | "get_embedding" | "yolo_infer";
   id: string;
   data?: unknown;
 }
 
 interface InitFaceData {
   modelUrl: string;
+}
+
+interface InitYoloData {
+  modelUrl: string;
+  classNames?: Array<{ id: number; name: string; label: string }>;
 }
 
 interface EmbeddingData {
@@ -65,12 +72,29 @@ interface EmbeddingData {
   height: number;
 }
 
+interface YoloData {
+  /** RGBA pixel data from a 640x640 letterboxed torso crop */
+  pixels: Uint8ClampedArray;
+  width: number;
+  height: number;
+  /** Number of classes the model was trained on */
+  numClasses: number;
+}
+
 // ─── Worker State ───────────────────────────────────────────
 
 let faceSession: ort.InferenceSession | null = null;
+let yoloSession: ort.InferenceSession | null = null;
 
 // Constants
 const FACE_INPUT_SIZE = 112; // ArcFace w600k_mbf: 112x112 input
+const YOLO_INPUT_SIZE = 640; // YOLO11n uniform model: 640x640 input
+// Raw box gate before NMS. Deliberately above the old 0.45: a 1-class model
+// trained on 97 photos emits a long tail of low-score boxes on plain clothing,
+// and every one of them cost work downstream. The kiosk's real decision gate
+// (MIN_UNIFORM_CONFIDENCE in uniform.ts) is stricter still.
+const CONFIDENCE_THRESHOLD = 0.6;
+const NMS_IOU_THRESHOLD = 0.5;
 
 // ─── Message Handler ────────────────────────────────────────
 
@@ -93,6 +117,11 @@ async function handleWorkerMessage(event: MessageEvent<WorkerMessage>) {
         self.postMessage({ type: "init_face_done", id, data: true });
         break;
 
+      case "init_yolo":
+        await initYoloSession((data as InitYoloData).modelUrl);
+        self.postMessage({ type: "init_yolo_done", id, data: true });
+        break;
+
       case "get_embedding": {
         const embedding = await computeEmbedding(data as EmbeddingData);
         // 🔴 FIX: Use WindowPostMessageOptions to match Window.postMessage typing
@@ -101,6 +130,12 @@ async function handleWorkerMessage(event: MessageEvent<WorkerMessage>) {
           { type: "embedding_result", id, data: embedding },
           { transfer: embedding ? [embedding.buffer] : [] },
         );
+        break;
+      }
+
+      case "yolo_infer": {
+        const detections = await runYoloInference(data as YoloData);
+        self.postMessage({ type: "yolo_result", id, data: detections });
         break;
       }
 
@@ -198,4 +233,112 @@ async function computeEmbedding(data: EmbeddingData): Promise<Float32Array | nul
   }
 
   return embedding;
+}
+
+// --- YOLO Uniform Inference ---
+
+async function initYoloSession(modelUrl: string): Promise<void> {
+  if (yoloSession) return;
+  // Keep CDN WASM binaries exactly aligned with the installed runtime version.
+  ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.27.0/dist/";
+  yoloSession = await ort.InferenceSession.create(modelUrl, {
+    executionProviders: resolveExecutionProviders(isWebGpuAvailable()),
+  });
+}
+
+async function runYoloInference(data: YoloData): Promise<YoloDetection[]> {
+  if (!yoloSession) return [];
+  const { pixels, width, height, numClasses } = data;
+  // RGBA to normalized float32 CHW (1, 3, 640, 640)
+  const inputSize = width * height;
+  const float32Data = new Float32Array(3 * inputSize);
+  for (let i = 0; i < inputSize; i++) {
+    const offset = i * 4;
+    float32Data[i] = pixels[offset] / 255.0;
+    float32Data[inputSize + i] = pixels[offset + 1] / 255.0;
+    float32Data[2 * inputSize + i] = pixels[offset + 2] / 255.0;
+  }
+  const inputTensor = new ort.Tensor("float32", float32Data, [1, 3, height, width]);
+  const feeds: Record<string, ort.Tensor> = {};
+  feeds[yoloSession.inputNames[0]] = inputTensor;
+  const results = await yoloSession.run(feeds);
+  const outputName = yoloSession.outputNames[0];
+  const output = results[outputName];
+  return postprocess(output.data as Float32Array, output.dims!, numClasses);
+}
+
+interface YoloDetection {
+  bbox: [number, number, number, number];
+  classId: number;
+  confidence: number;
+}
+
+/** Decode a YOLO11n export ([1, 4 + classes, anchors]) into boxes, then NMS. */
+function postprocess(
+  output: Float32Array,
+  dims: readonly number[],
+  numClasses: number,
+): YoloDetection[] {
+  if (dims.length < 3) return [];
+  const [, , numDetections] = dims;
+  const boxes: YoloDetection[] = [];
+  for (let i = 0; i < numDetections; i++) {
+    const xc = output[i];
+    const yc = output[numDetections + i];
+    const w = output[2 * numDetections + i];
+    const h = output[3 * numDetections + i];
+    let bestClassId = -1;
+    let bestClassScore = 0;
+    for (let c = 0; c < numClasses; c++) {
+      const score = output[(4 + c) * numDetections + i];
+      if (score > bestClassScore) {
+        bestClassScore = score;
+        bestClassId = c;
+      }
+    }
+    if (bestClassScore >= CONFIDENCE_THRESHOLD && bestClassId >= 0) {
+      boxes.push({
+        bbox: [
+          Math.max(0, (xc - w / 2) / YOLO_INPUT_SIZE),
+          Math.max(0, (yc - h / 2) / YOLO_INPUT_SIZE),
+          Math.min(1, w / YOLO_INPUT_SIZE),
+          Math.min(1, h / YOLO_INPUT_SIZE),
+        ],
+        classId: bestClassId,
+        confidence: bestClassScore,
+      });
+    }
+  }
+  return nonMaxSuppression(boxes, NMS_IOU_THRESHOLD);
+}
+
+function nonMaxSuppression(detections: YoloDetection[], iouThreshold: number): YoloDetection[] {
+  if (detections.length <= 1) return detections;
+  const sorted = [...detections].sort((a, b) => b.confidence - a.confidence);
+  const result: YoloDetection[] = [];
+  while (sorted.length > 0) {
+    const best = sorted.shift()!;
+    result.push(best);
+    // Class-aware NMS: overlapping boxes of DIFFERENT classes are kept.
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const iou = calculateIoU(best.bbox, sorted[i].bbox);
+      if (best.classId === sorted[i].classId && iou > iouThreshold) sorted.splice(i, 1);
+    }
+  }
+  return result;
+}
+
+function calculateIoU(
+  a: [number, number, number, number],
+  b: [number, number, number, number],
+): number {
+  const [ax, ay, aw, ah] = a;
+  const [bx, by, bw, bh] = b;
+  const x1 = Math.max(ax, bx);
+  const y1 = Math.max(ay, by);
+  const x2 = Math.min(ax + aw, bx + bw);
+  const y2 = Math.min(ay + ah, by + bh);
+  const intersection = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+  const union = aw * ah + bw * bh - intersection;
+  return union > 0 ? intersection / union : 0;
 }

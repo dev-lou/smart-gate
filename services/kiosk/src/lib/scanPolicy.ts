@@ -126,6 +126,14 @@ export const PERSON_REDECIDE_MS = 2_500;
  */
 export const FACE_MATCH_WINDOW_MS = 3000;
 
+/**
+ * A name needs more than one lucky frame behind it. At the walk-up cadence a
+ * three-second window yields six to twelve reads from a student standing there,
+ * so anything thinner is a glimpse — a passer-by in the corridor, a face at the
+ * edge of frame — and must never be named.
+ */
+export const MIN_FACE_SAMPLES = 2;
+
 /** One recognition tick inside the matching window. */
 export interface FaceSample {
   /** Enrolled identity the tick read, or "" when the frame matched nobody. */
@@ -166,13 +174,18 @@ export function faceWindowElapsed(win: FaceWindow, now: number): boolean {
 }
 
 /**
- * The identity with the best average similarity across the window, and how many
- * reads backed it. Null while no identity was ever read. A tie goes to the
- * identity seen in more frames \u2014 more evidence is the better bet.
+ * The identity with the best average similarity across the window, how many
+ * reads backed it, and the best average among every OTHER identity.
+ *
+ * The runner-up is what makes a lookalike safe: naming a winner that sits within
+ * a hair of the next-closest enrolled profile is how the wrong student ends up
+ * on the card, so the caller compares the two before it decides anything.
+ * Null while no identity was ever read. A tie goes to the identity seen in more
+ * frames, where more evidence is the better bet.
  */
 export function bestFaceInWindow(
   win: FaceWindow,
-): { id: string; score: number; samples: number } | null {
+): { id: string; score: number; samples: number; runnerUp: number } | null {
   const totals = new Map<string, { sum: number; count: number }>();
   for (const sample of win.samples) {
     if (!sample.id) continue;
@@ -182,14 +195,31 @@ export function bestFaceInWindow(
     totals.set(sample.id, entry);
   }
 
+  const averages = [...totals].map(([id, entry]) => ({
+    id,
+    score: entry.sum / entry.count,
+    samples: entry.count,
+  }));
+
   let best: { id: string; score: number; samples: number } | null = null;
-  for (const [id, entry] of totals) {
-    const score = entry.sum / entry.count;
-    if (!best || score > best.score || (score === best.score && entry.count > best.samples)) {
-      best = { id, score, samples: entry.count };
+  for (const entry of averages) {
+    if (
+      !best ||
+      entry.score > best.score ||
+      (entry.score === best.score && entry.samples > best.samples)
+    ) {
+      best = entry;
     }
   }
-  return best;
+  if (!best) return null;
+
+  let runnerUp = -1;
+  for (const entry of averages) {
+    if (entry.id === best.id) continue;
+    if (entry.score > runnerUp) runnerUp = entry.score;
+  }
+
+  return { ...best, runnerUp };
 }
 
 /**

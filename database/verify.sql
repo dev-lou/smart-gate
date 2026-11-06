@@ -106,15 +106,12 @@ WITH checks (check_no, migration, check_name, status, detail) AS (
     FROM course_uniforms
 
     UNION ALL
-    SELECT 10, '005', 'system_settings.uniform_class_names matches the model',
+    SELECT 10, '005/020', 'system_settings.uniform_class_names matches the model',
         CASE WHEN count(*) = 1 THEN 'PASS' ELSE 'FAIL' END,
-        coalesce(max(left(value, 70)), 'MISSING — run 005_align_uniforms_to_model.sql')
+        coalesce(max(left(value, 70)), 'MISSING — run 020_cict_single_uniform.sql')
     FROM system_settings
     WHERE key = 'uniform_class_names'
-      AND value LIKE '%cbmsd_chef_male_uniform%'
-      AND value LIKE '%cici_blazer_uniform%'
-      AND value LIKE '%coag_male_uniform%'
-      AND value LIKE '%education_male_uniform%'
+      AND value LIKE '%cict_male_uniform%'
 
     UNION ALL
     SELECT 11, '005/006', 'access_logs compatibility columns (person_type, direction, override_*)',
