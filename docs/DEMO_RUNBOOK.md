@@ -9,7 +9,7 @@ One page. Follow this order and the live demo cannot fail.
 | # | Task | Where | Status |
 |---|------|-------|--------|
 | 1 | Fill real Supabase credentials in all 3 `.env.local` files | `services/{kiosk,guard,dashboard}/.env.local` | ☐ |
-| 2 | Run `database/schema.sql`, then any migrations you have not applied yet (`006` → `017`) | Supabase → SQL Editor | ☐ |
+| 2 | Run `database/schema.sql`, then any migrations you have not applied yet (`006` → `020`) | Supabase → SQL Editor | ☐ |
 | 3 | Verify with one paste: run `database/verify.sql` → every row PASS | Supabase SQL Editor | ☐ |
 | 4 | Flash `hardware/esp32/smart_gate_esp32.ino` to the ESP32 (Arduino IDE + WebSockets library) | Arduino IDE | ☐ |
 | 5 | Enrol **3 demo students** (5 angles each) and **1 guest with a pass expiring in 2 minutes** | Guard Station `:3001` | ☐ |
@@ -36,21 +36,22 @@ One page. Follow this order and the live demo cannot fail.
 
 | # | Do this | What they see |
 |---|---------|---------------|
-| 1 | Student A steps up and holds still ~2 s | Confirmation builds, then **ACCESS GRANTED** + chime + "Welcome to ISUFST", gate physically opens |
-| 2 | Student A stands still another 10 s | **Nothing is logged again** — one person, one row (this is the point of slide 9) |
+| 1 | Student A (in uniform) steps up and holds still ~2 s | Confirmation builds, then **ACCESS GRANTED** + chime + "Welcome to ISUFST", gate physically opens |
+| 2 | Student A stands still another 10 s | **Nothing is logged again** — one person, one row (this is the point of slide 15) |
 | 3 | Student A leaves; guest with the expiring pass steps up | Granted while valid — `GUEST_PASS_VALID` |
 | 4 | Wait for the pass to expire, guest steps up again | **Denied** — "pass expired, see guard", `GUEST_EXPIRED` |
 | 5 | Dashboard → Settings → turn **lockdown** on, student steps up | **Denied** — `LOCKDOWN_ACTIVE`, reason shown on screen |
 | 6 | Turn lockdown off, press the **physical button** | Arm opens — staff override still works |
 | 7 | Reconnect network → sync panel | Queued logs from airplane mode sync now |
 | 8 | Dashboard → Access Logs | Rows show who, when, and **why** — permission and denial both explained |
+| 9 | Hold up a printed school-ID QR instead of a face | **Granted by code** — logged method `qr`, uniform still checked |
 
 ## 🗣️ What to say (30-second script)
 
 > "This is a smart gate kiosk. Everything runs in the browser — face detection
 > and ArcFace recognition at 512 dimensions, a confirmation step that needs five
-> matching reads before it will trust a face, and a policy layer for guest
-> passes and lockdown. It's offline-first: the models and student data live on
+> matching reads before it will trust a face, a uniform check on the grey
+> polo, and a policy layer for guest passes and lockdown. It's offline-first: the models and student data live on
 > the tablet, and decisions queue locally and sync to Supabase when a connection
 > returns. The ESP32 moves the arm over its own hotspot, and the kiosk waits for
 > the controller to confirm the barrier opened before it says so."
@@ -78,7 +79,7 @@ One page. Follow this order and the live demo cannot fail.
 ```bash
 pnpm dev          # all 3 services (dashboard :3000, guard :3001, kiosk :3002)
 pnpm typecheck    # TS check, all services
-cd services/kiosk && npx vitest run   # 83 unit tests
+cd services/kiosk && npx vitest run   # 146 unit tests (+ 15 dashboard)
 pnpm build        # production build, all services
 pnpm preflight    # audit the live database before the demo
 ```

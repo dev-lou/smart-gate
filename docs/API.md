@@ -181,6 +181,7 @@ The kiosk PWA uses a Service Worker to cache AI models for offline use.
 |----------|------|--------|
 | MediaPipe WASM runtime | ~4 MB | `cdn.jsdelivr.net/npm/@mediapipe/tasks-vision` |
 | ArcFace model (w600k_mbf.onnx) | ~6 MB | `huggingface.co/WePrompt/buffalo_sc` |
+| CLIP vision (`clip_vision_q8.onnx`) + prompts | ~89 MB | Ships with the app in `services/kiosk/public/models/` (cached after first load) |
 
 ### Cache Strategy
 
@@ -211,6 +212,24 @@ getFaceEmbedding(video, bbox, canvas): Float32Array | null
 
 matchFace(embedding, enrolledFaces): MatchResult
   → Cosine similarity against all enrolled → { matched, person, confidence }
+```
+
+### Uniform Module (`lib/uniform.ts`)
+
+```typescript
+initUniformDetector(): Promise<boolean>
+  → Loads the CLIP vision session + `uniform_prompts.json` embeddings
+
+checkUniform(video, faceBbox, _expectedUniform?, _canvas?): Promise<UniformCheckResult>
+  → Torso crop under the face → zero-shot grey-polo vs plain-clothes →
+    { ok, confidence, detail }; grants only at P(uniform) ≥ 0.60 with a
+    0.20 margin, else NO_UNIFORM / WRONG_UNIFORM
+
+torsoRegion(faceBbox, video): Bbox
+  → Torso crop under the detected face
+
+qrFallbackFaceBbox(): [x, y, w, h]
+  → Full-frame box so the QR path still runs the uniform check with no face
 ```
 
 ### Scan Policy Module (`lib/scanPolicy.ts`)

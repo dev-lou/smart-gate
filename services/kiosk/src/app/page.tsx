@@ -31,6 +31,7 @@ import {
 import {
   checkUniform,
   initUniformDetector,
+  qrFallbackFaceBbox,
   torsoRegion,
   type UniformCheckResult,
 } from "@/lib/uniform";
@@ -146,7 +147,7 @@ type ScanStep = "searching" | "face" | "verify" | "done";
 type StepVisual = "idle" | "working" | "ok" | "fail";
 
 /**
- * How often recognition (ArcFace embedding + match + YOLO uniform check) may
+ * How often recognition (ArcFace embedding + match + CLIP uniform check) may
  * run for the person in front of the camera. Face *detection* keeps running
  * at close to camera framerate so the reticle tracks smoothly; only the
  * expensive identity/uniform step is throttled.
@@ -604,7 +605,7 @@ export default function KioskPage() {
   /**
    * Torso band currently being read by the uniform model (normalized video
    * coords + expiry). Set just before `await checkUniform` and cleared right
-   * after, so the overlay can draw the "what I am reading" box while YOLO
+   * after, so the overlay can draw the "what I am reading" box while CLIP
    * runs. Refs only — the rAF loop reads it without re-rendering.
    */
   const uniformScanRef = useRef<{
@@ -1077,7 +1078,7 @@ export default function KioskPage() {
       }
 
       // ─── 2. Recognition — throttled ───────────────────────
-      // ArcFace + YOLO cost a few hundred ms. Running them on a fixed interval
+      // ArcFace + CLIP cost a few hundred ms. Running them on a fixed interval
       // (instead of every frame) keeps detection smooth and stops the reticle
       // from stalling while a check is in flight.
       const detected = lastFacesRef.current;
@@ -1187,9 +1188,9 @@ export default function KioskPage() {
         }
       }
 
-      // School-ID QR entry is a first-class choice, not only a fallback: a
-      // student may present their ID instead of standing for the camera, and the
-      // gate opens either way. This runs with no face in frame at all.
+      // School-ID QR is the fallback face: a student whose face cannot be
+      // read may present their ID instead, but the uniform check still runs.
+      // This runs with no face in frame at all.
       if (
         settingsRef.current.allowQr &&
         (qrSlotsRef.current[0] || qrSlotsRef.current[1]) &&
@@ -1250,12 +1251,12 @@ export default function KioskPage() {
   // ─── Face Processing ────────────────────────────────────
 
   /**
-   * School-ID QR entry \u2014 a first-class alternative to the camera.
+   * School-ID QR entry \u2014 the fallback face, not a side door.
    *
-   * Either method opens the gate: a student may look at the camera OR present
-   * their ID, and neither is a second factor for the other. The only overlap
-   * rule is the two-second guard below — a face that just matched already owns
-   * this decision, so the code cannot log the same student twice. An unenrolled
+   * A student whose face cannot be read (injury, bandage, no usable template)
+   * may present their school ID instead of looking at the camera. The code
+   * replaces identity only: lockdown, the uniform check, and the per-person
+   * window all still apply, and the decision is logged with method "qr". An unenrolled
    * code is reported honestly instead of being ignored.
    */
   async function tryQrEntry(slot: number) {
@@ -1400,10 +1401,80 @@ export default function KioskPage() {
       return;
     }
 
+    // Uniform still applies on the QR path: the code replaces the face, not
+    // the dress check. There is no face box here (the student may hold the ID
+    // over their face), so the torso band is read under a centred head-height
+    // box — the floor oval guides every student to that standing spot.
+    if (settingsRef.current.uniformEnabled) {
+      const video = videoRef.current;
+      const vw = video?.videoWidth ?? 0;
+      const vh = video?.videoHeight ?? 0;
+      let uniformDetail: string | null = null;
+      let wrongType = false;
+      if (!video || vw === 0 || vh === 0) {
+        uniformDetail = "Uniform detector unavailable";
+      } else {
+        const qrFaceBbox = qrFallbackFaceBbox();
+        const band = torsoRegion(qrFaceBbox, { videoWidth: vw, videoHeight: vh });
+        uniformScanRef.current = {
+          bbox: [band.x / vw, band.y / vh, band.width / vw, band.height / vh],
+          until: Date.now() + 10000,
+        };
+        setStatusMessage("Reading uniform…");
+        const uniformCheck = await checkUniform(
+          video,
+          qrFaceBbox,
+          person.uniform_type ?? "",
+          canvasRef.current ?? undefined,
+        ).catch(
+          (): UniformCheckResult => ({ ok: false, confidence: 0, detail: "Uniform detector unavailable" }),
+        );
+        uniformScanRef.current = null;
+        if (!uniformCheck.ok) {
+          uniformDetail = uniformCheck.detail;
+          wrongType = uniformCheck.detectedType != null;
+        }
+      }
+      if (uniformDetail) {
+        const code = wrongType ? "WRONG_UNIFORM" : "NO_UNIFORM";
+        lastDecisionByPersonRef.current.set(person.id, { at: Date.now(), granted: false });
+        const denyToken = ++decisionSeqRef.current;
+        setKioskState("denied");
+        playCue("deny");
+        setStatusMessage(uniformDetail);
+        setHoldNotice({ kind: "denied", name: person.name, at: Date.now(), personId: person.id, detail: uniformDetail });
+        rememberDecision(person.name, person.id, false);
+        setSlotPhaseAt(slot, "denied", uniformDetail);
+        cardHoldUntilRef.current = Date.now() + RESULT_CARD_MIN_HOLD_MS;
+        faceWindowRef.current[slot] = { ...EMPTY_FACE_WINDOW };
+        scheduleCardRetire(slot, denyToken);
+        await addLog({
+          person_id: person.id,
+          person_name: person.name,
+          person_type: "student",
+          direction: "entry",
+          method: "qr",
+          success: false,
+          confidence: 0,
+          uniform_ok: false,
+          failure_reason: uniformDetail,
+          reason_code: code,
+          decision_note: `${uniformDetail} — school ID QR`,
+          client_id: "kiosk-01",
+          gate_state: "closed",
+          device_timestamp: new Date().toISOString(),
+        }).catch((err) => console.warn("[Kiosk] Log write failed:", err));
+        refreshStats();
+        setTimeout(() => {
+          setKioskState("ready");
+          setStatusMessage("Ready");
+          setScanStep("searching");
+        }, VERDICT_HOLD_MS);
+        return;
+      }
+    }
+
     const cardToken = ++decisionSeqRef.current;
-    setKioskState("granted");
-    playCue("grant");
-    setStatusMessage(`Welcome, ${person.name}!`);
     setVerdict({ person, confidence: 0, isGuest: false });
     setScanStep("done");
     slotCardsRef.current[slot] = {
@@ -1700,14 +1771,14 @@ export default function KioskPage() {
     const isGuestMatch = match.matched && match.person?.uniform_type === 'guest';
 
     // Uniform check — students only, guests skip it (no uniform requirement).
-    // The torso band under the named face goes to the YOLO model and the
-    // detected course family must match theirs (any CICI uniform verifies a
-    // CICI student). A missing or failing detector fails closed — waving
+    // The torso band under the named face goes to the CLIP zero-shot check:
+    // the uniform prompts must beat every plain-clothes prompt clearly.
+    // A missing or failing detector fails closed — waving
     // everyone through would make the admin toggle a lie.
     let uniformCheck: UniformCheckResult | null = null;
     if (match.matched && match.person && settingsRef.current.uniformEnabled && !isGuestMatch) {
       // Publish the torso band being read so the overlay draws the "what I am
-      // reading" box while YOLO runs, and say so on the status line. Cleared
+      // reading" box while CLIP runs, and say so on the status line. Cleared
       // the moment the check settles (grant/deny branches overwrite the text).
       const vw = video.videoWidth || 640;
       const vh = video.videoHeight || 640;
@@ -2229,7 +2300,7 @@ export default function KioskPage() {
     }
 
     // ── 3. Uniform read band ──
-    // While YOLO is reading the torso, bracket the exact band being judged in
+    // While CLIP is reading the torso, bracket the exact band being judged in
     // amber, so the student can see the check is live and whether the uniform
     // is actually inside the read area. The "READING UNIFORM…" wording lives on
     // the uniform box's own pill (step 1) — two chips on one band collided.

@@ -63,6 +63,7 @@
 | **Supabase** | Cloud database | PostgreSQL, Auth, Storage |
 | **IndexedDB (idb)** | Offline storage | Queue decisions and logs offline |
 | **MediaPipe Tasks Vision** | Face detection | Fast WASM face detector |
+| **CLIP ViT-B/32 (ONNX)** | Uniform check | Zero-shot grey-polo vs plain clothes (P ≥ 0.60 + 0.20 margin) |
 | **ArcFace + ONNX** | Face recognition | 512-d embeddings, in-browser |
 | **ONNX Runtime Web** | AI inference engine | WebGPU → WebGL → WASM fallback |
 | **ESP32 Wi-Fi (WebSocket)** | Gate control (primary) | Tablet ↔ ESP32 over its own hotspot |
@@ -153,10 +154,18 @@ Student approaches gate
 └────────────────┬─────────────────────────┘
                  │
                  ▼
+┌─── UNIFORM ─────────────────────────────┐
+│  CLIP zero-shot on the torso crop        │
+│  Grey polo ≥ 0.60 (+0.20 margin)         │
+│  Otherwise → deny (NO_/WRONG_UNIFORM)    │
+└────────────────┬─────────────────────────┘
+                 │
+                 ▼
 ┌─── POLICY ──────────────────────────────┐
 │  Lockdown active?        → deny          │
 │  Guest pass expired?     → deny          │
-│  Student face match      → grant         │
+│  Face match + uniform   → grant          │
+│  School-ID QR + uniform  → grant (qr)    │
 │  Every outcome gets a reason code        │
 └────────────────┬─────────────────────────┘
                  │
@@ -176,7 +185,8 @@ The gate grants on **face match + policy**, not on appearance:
 |------|-----------|
 | **Lockdown** | `lockdown_mode = true` denies everyone with `LOCKDOWN_ACTIVE`; manual guard override still works |
 | **Guest e-pass** | Guests are enrolled with a host and an expiry; an expired pass is denied with `GUEST_EXPIRED` |
-| **Students** | A confirmed face match is the whole check, logged as `POLICY_PASS` |
+| **Students** | A confirmed face match **plus the grey-uniform check** passes, logged as `POLICY_PASS` |
+| **School-ID QR** | Printed QR fallback when a face can't be recognised — uniform still checked, logged with method `qr` |
 | **Explainability** | Every row carries `reason_code` + `decision_note` the guard can read |
 
 ## Monorepo Structure
@@ -202,14 +212,14 @@ smart-gate/
 │   └── dashboard/               # 📊 Admin (port 3000) — logs, health, reports, QR codes
 ├── database/
 │   ├── schema.sql
-│   └── migrations/              # 003 → 017
+│   └── migrations/              # 003 → 020
 ├── hardware/
 │   ├── esp32/smart_gate_esp32.ino   # primary: SoftAP + WebSocket
 │   └── arduino/smart_gate.ino       # fallback: USB serial
 └── docs/
     ├── ARCHITECTURE.md  ·  API.md  ·  SETUP.md
     ├── DEMO_RUNBOOK.md  ·  CHAPTER_IV_RESULTS.md
-    └── Smart_Gate_Defense.pptx      # defense deck
+    └── capstone_slide.pptx          # defense deck (23 slides)
 ```
 
 ## What Each Service Does
@@ -218,6 +228,8 @@ smart-gate/
 - Full-screen camera kiosk with **Tap-to-Start** (unlocks camera + audio in one gesture)
 - **MediaPipe** face detection, **ArcFace** 512-d recognition in a shared Web Worker
 - **Confirmation gate**: 5 consecutive reads + 0.08 margin before any decision
+- **Uniform gate**: CLIP zero-shot checks the grey polo (P ≥ 0.60 + 0.20 margin); failures deny with `NO_UNIFORM` / `WRONG_UNIFORM`
+- **QR fallback**: printed school-ID QR grants when a face can't be recognised (uniform still checked)
 - **Policy**: lockdown, guest-pass expiry, student match — each with a reason code
 - **Gate feedback loop** — waits for `S:OPEN` before claiming the gate opened
 - **Voice** — synthesized chimes plus offline MP3 lines, with device TTS fallback
@@ -258,12 +270,13 @@ pnpm format          # Prettier
 pnpm typecheck       # TypeScript, all services
 pnpm build           # Production build
 pnpm preflight       # Audit the live database
-cd services/kiosk && npx vitest run   # 83 unit tests
+cd services/kiosk && npx vitest run       # 146 unit tests
+cd services/dashboard && npx vitest run   # 15 unit tests
 ```
 
 The unit suite covers the logic that can be tested without a camera: face matching
 maths, the confirmation/re-arm policy, gate message parsing, heartbeat row building,
-audio throttling, and log-noise filtering.
+audio throttling, log-noise filtering, and the uniform gate plus school-ID QR fallback.
 
 ## Key Design Principles
 

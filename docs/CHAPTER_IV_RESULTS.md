@@ -8,10 +8,11 @@
 
 Three kinds of evidence support the claims made for this system:
 
-1. **Unit tests** — 83 assertions over the pure logic that decides access:
+1. **Unit tests** — 146 assertions over the pure logic that decides access:
    cosine matching, the confirmation gate, the re-arm state machine, gate
-   message parsing, heartbeat row shaping, and audio throttling. `vitest run`
-   in `services/kiosk` passes 83/83.
+   message parsing, heartbeat row shaping, audio throttling, the uniform
+   gate and the school-ID QR fallback. `vitest run` in `services/kiosk`
+   passes 146/146 (the dashboard suite adds 15/15).
 2. **Offline rehearsal** — the tablet was put in airplane mode and driven
    through a full visit: detection, recognition, decision, gate command and
    queued logging all complete with the network down. Only the sync half of the
@@ -42,6 +43,12 @@ the outcome is an unknown face — never a wrong name.
 model's published LFW benchmark, not this system's measured false-accept rate.
 No target-FMR sweep has been run against the enrolled population, so this
 prototype cannot state a false-accept rate for the school's own students.
+
+The uniform check is a separate gate, not part of the face score. A torso
+crop is judged zero-shot by CLIP against the grey-uniform prompt and grants
+only at P(uniform) ≥ 0.60 with a 0.20 margin over plain-clothes prompts;
+otherwise the decision is NO_UNIFORM / WRONG_UNIFORM. The school-ID QR path
+skips the face step but never the uniform step.
 
 ## 4.3 Decision Integrity
 
@@ -93,6 +100,7 @@ frame delivery is not blocked by inference.
 - Fairness across skin tones and lighting conditions was not evaluated.
 - One gate, one kiosk. Multi-gate coordination is untested.
 
-The remedy for each is measurement first: calibrate the threshold to a target
-false-match rate, add liveness before claiming security, and load-test a real
-arrival peak before wider deployment.
+The remedy for each is the recommendation set: recognise several students per
+frame (per-person identity plus uniform), add liveness before claiming
+security, add a tailgating alarm, and evaluate fairness across skin tones and
+lighting before wider deployment.

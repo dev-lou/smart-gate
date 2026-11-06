@@ -103,10 +103,16 @@ Every 3rd video frame
 └────────────────────────┬─────────────────────────────────┘
                          ▼
 ┌──────────────────────────────────────────────────────────┐
-│ 6. POLICY + DECISION                                     │
+│ 6. UNIFORM CHECK (CLIP zero-shot)                        │
+│    Torso crop → P(uniform) ≥ 0.60 + 0.20 margin           │
+│    Otherwise deny: NO_UNIFORM / WRONG_UNIFORM             │
+└────────────────────────┬─────────────────────────────────┘
+                         ▼
+┌──────────────────────────────────────────────────────────┐
+│ 7. POLICY + DECISION                                     │
 │    lockdown_mode        → deny (LOCKDOWN_ACTIVE)          │
 │    guest pass expired   → deny (GUEST_EXPIRED)            │
-│    confirmed face       → grant (POLICY_PASS /            │
+│    face + uniform       → grant (POLICY_PASS /            │
 │                            GUEST_PASS_VALID)              │
 │    Gate command → wait for S:OPEN → log open/unconfirmed  │
 │    Row (reason_code + decision_note) → IndexedDB         │
@@ -200,15 +206,20 @@ Person approaches the kiosk camera
        no                                 yes
         │                                   │
         ▼                                   ▼
-  unknown face (soft beep),        6. Policy check
-  no decision, no log                 lockdown → deny
-                                      guest expired → deny
-                                      otherwise → grant
-                                            │
-                                            ▼
-                                 7. Gate command → S:OPEN
-                                    log with reason_code
+  unknown face (soft beep),        6. Uniform check (CLIP)
+  no decision, no log                 fail → deny (NO_/WRONG_UNIFORM)
+                                      pass → 7. Policy check
+                                        lockdown → deny
+                                        guest expired → deny
+                                        otherwise → grant
+                                              │
+                                              ▼
+                                   8. Gate command → S:OPEN
+                                      log with reason_code
 ```
+
+QR path: a printed school-ID QR skips the face step but not the uniform
+check — scan → uniform → same policy, granted with method `qr`.
 
 ### Sync Flow (IndexedDB ↔ Supabase)
 
@@ -308,7 +319,7 @@ Push/PR
 1. Prettier check (blocking) + ESLint (informational)
 2. TypeScript check — dashboard, guard, kiosk (3 parallel jobs)
 3. Build — dashboard, guard, kiosk (3 parallel jobs)
-4. Unit tests — vitest, 83 tests
+4. Unit tests — vitest, 161 tests (146 kiosk + 15 dashboard)
 5. Deploy (gated) — 3 Vercel projects
    Weekly: CodeQL security scan
 ```

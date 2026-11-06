@@ -161,6 +161,19 @@ export function torsoRegion(
   };
 }
 
+/**
+ * Stand-in face box for the school-ID QR path.
+ *
+ * A QR entry has no detected face (the student may hold the ID over it), but
+ * the uniform check still needs a head position to hang the torso band under.
+ * The floor oval guides every student to the same standing spot, so a centred
+ * head-height box is the honest stand-in — and torsoRegion() derives the same
+ * centre-bottom band the camera path reads.
+ */
+export function qrFallbackFaceBbox(): [number, number, number, number] {
+  return [0.5 - 0.15, 0.12, 0.3, 0.3];
+}
+
 // ─── Preprocessing ──────────────────────────────────────────
 
 /**
