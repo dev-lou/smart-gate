@@ -36,15 +36,15 @@ One page. Follow this order and the live demo cannot fail.
 
 | # | Do this | What they see |
 |---|---------|---------------|
-| 1 | Student A (in uniform) steps up and holds still ~2 s | Confirmation builds, then **ACCESS GRANTED** + chime + "Welcome to ISUFST", gate physically opens |
+| 1 | Student A (in uniform) steps into the oval, holds still ~2 s | Name + course freeze (**IDENTITY VERIFIED**) — press **Next: uniform** — uniform line appears — press **Open Gate** → **ACCESS GRANTED** + chime, gate opens |
 | 2 | Student A stands still another 10 s | **Nothing is logged again** — one person, one row (this is the point of slide 15) |
-| 3 | Student A leaves; guest with the expiring pass steps up | Granted while valid — `GUEST_PASS_VALID` |
+| 3 | Student A leaves; guest with the expiring pass steps up | Name locks — press **Next** (guests skip the uniform read) — press **Open Gate** → granted, `GUEST_PASS_VALID` |
 | 4 | Wait for the pass to expire, guest steps up again | **Denied** — "pass expired, see guard", `GUEST_EXPIRED` |
 | 5 | Dashboard → Settings → turn **lockdown** on, student steps up | **Denied** — `LOCKDOWN_ACTIVE`, reason shown on screen |
 | 6 | Turn lockdown off, press the **physical button** | Arm opens — staff override still works |
 | 7 | Reconnect network → sync panel | Queued logs from airplane mode sync now |
 | 8 | Dashboard → Access Logs | Rows show who, when, and **why** — permission and denial both explained |
-| 9 | Hold up a printed school-ID QR instead of a face | **Granted by code** — logged method `qr`, uniform still checked |
+| 9 | Hold up a printed school-ID QR instead of a face | Name appears at once (before any uniform read) — **Next** checks the uniform — **Open Gate** opens it, logged method `qr` |
 
 ## 🗣️ What to say (30-second script)
 

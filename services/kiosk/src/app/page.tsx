@@ -69,7 +69,6 @@ import {
   isSettledUnknown,
   nextPresence,
   resolveGateOutcome,
-  shouldDecide,
   shouldAnnounceWelcome,
   type FaceWindow,
 } from "@/lib/scanPolicy";
@@ -141,6 +140,33 @@ type KioskState =
  *   verify    → identity matched, reading the uniform (amber torso box)
  *   done      → a verdict was reached (grant/deny card takes over)
  */
+/**
+ * Panel-demo stepped flow: identity FIRST, uniform SECOND, gate on a button.
+ * Step 1 ("identify") reads the face or the school-ID QR and freezes the name
+ * + course on screen. Only the Next button runs the Step 2 uniform check, and
+ * only the Open Gate button fires the relay. Nothing opens by itself, so every
+ * AI stage gets its own narratable moment in front of a panel.
+ */
+type FlowStep =
+  "identify" | "locked" | "checkingUniform" | "uniformPass" | "uniformFail" | "opened";
+
+/**
+ * The identity Step 1 froze: who is standing at the oval, how they were
+ * identified, and what Step 2 still has to check. `faceBbox` is the winning
+ * face box (face path) or null (QR path, which reads a centred head-height
+ * box instead because the student may hold the ID over their face).
+ */
+type LockedIdentity = {
+  id: string;
+  name: string;
+  department: string;
+  uniformType: string;
+  method: "face" | "qr";
+  confidence: number;
+  faceBbox: FaceResult["bbox"] | null;
+  isGuest: boolean;
+};
+
 type ScanStep = "searching" | "face" | "verify" | "done";
 
 /** Visual state of one step in the on-screen scan pipeline. */
@@ -626,10 +652,10 @@ export default function KioskPage() {
   // ─── Re-arm / duplicate guards ──────────────────────────
   // `faceFreeSinceRef` is when the gate area last became empty (0 while someone
   // is in frame) — it tracks "real absence" (≥ REARM_ABSENCE_MS) so a blink or
-  // one dropped detection frame never reads as "the student left". Decisions
-  // are gated per-IDENTITY in processFace (shouldDecide), not by a global
-  // lock, so a new arrival is decided immediately even while the previous
-  // student's "already recorded" notice is still on screen.
+  // one dropped detection frame never reads as "the student left". Step 1
+  // freezes the decision the moment an identity locks — the operator's Next /
+  // Retake buttons own everything after that — so a lingering student can
+  // never re-trigger a decision, and a new arrival is read as someone new.
   const faceFreeSinceRef = useRef(0);
   /** True while a real absence has separated the frame from the last decision. */
   const frameClearedRef = useRef(false);
@@ -712,6 +738,27 @@ export default function KioskPage() {
   }, []);
   /** Settled unrecognised visitor — drives the amber "Unknown face" card. */
   const [unknownNotice, setUnknownNotice] = useState<{ score: number; at: number } | null>(null);
+  /**
+   * Step 1 owns the screen until the operator presses a button: while an
+   * identity is locked, the camera loop keeps tracking faces for the HUD but
+   * may not repaint, clear, or decide anything (see the freeze at the top of
+   * processFace and the stale-scan guard).
+   */
+  const [flowStep, setFlowStep] = useState<FlowStep>("identify");
+  const flowStepRef = useRef<FlowStep>("identify");
+  const lockedRef = useRef<LockedIdentity | null>(null);
+  /**
+   * One writer for the step: the ref updates synchronously so a double-tapped
+   * button cannot fire the same step twice before the re-render lands.
+   */
+  function setFlow(step: FlowStep) {
+    flowStepRef.current = step;
+    setFlowStep(step);
+  }
+  // Mirror for the rAF loop and the button guards, which read the ref.
+  useEffect(() => {
+    flowStepRef.current = flowStep;
+  }, [flowStep]);
   /** Render-loop mirror of `holdNotice` — safe to read inside the rAF loop. */
   const holdNoticeRef = useRef<{
     kind: "granted" | "denied";
@@ -1126,10 +1173,13 @@ export default function KioskPage() {
         // The visitor walked on: the next face in this oval is a new arrival
         // and earns its own welcome.
         welcomeRef.current = { id: "", at: 0 };
-        // ...but never the card that is still inside its guaranteed hold:
-        // "the oval is empty" is the normal state of a QR entry, not proof
-        // that the student has walked away from their receipt.
-        if (!resultCardHolding(cardHoldUntilRef.current, Date.now())) {
+        // ...but never the card that is still inside its guaranteed hold, and
+        // never a stepped-flow card: an empty oval is the normal state of a
+        // QR entry and of a student who stepped back after Step 1 locked them.
+        if (
+          flowStepRef.current === "identify" &&
+          !resultCardHolding(cardHoldUntilRef.current, Date.now())
+        ) {
           slotCardsRef.current = [null, null];
           setSlotPhases(["empty", "empty"]);
           setSlotDetails(["", ""]);
@@ -1403,161 +1453,271 @@ export default function KioskPage() {
       return;
     }
 
-    // Uniform still applies on the QR path: the code replaces the face, not
-    // the dress check. There is no face box here (the student may hold the ID
-    // over their face), so the torso band is read under a centred head-height
-    // box — the floor oval guides every student to that standing spot.
-    if (settingsRef.current.uniformEnabled) {
-      const video = videoRef.current;
-      const vw = video?.videoWidth ?? 0;
-      const vh = video?.videoHeight ?? 0;
-      let uniformDetail: string | null = null;
-      let wrongType = false;
-      if (!video || vw === 0 || vh === 0) {
-        uniformDetail = "Uniform detector unavailable";
-      } else {
-        const qrFaceBbox = qrFallbackFaceBbox();
-        const band = torsoRegion(qrFaceBbox, { videoWidth: vw, videoHeight: vh });
-        uniformScanRef.current = {
-          bbox: [band.x / vw, band.y / vh, band.width / vw, band.height / vh],
-          until: Date.now() + 10000,
-        };
-        setStatusMessage("Reading uniform…");
-        const uniformCheck = await checkUniform(
-          video,
-          qrFaceBbox,
-          person.uniform_type ?? "",
-          canvasRef.current ?? undefined,
-        ).catch((): UniformCheckResult => ({
-          ok: false,
-          confidence: 0,
-          detail: "Uniform detector unavailable",
-        }));
-        uniformScanRef.current = null;
-        if (!uniformCheck.ok) {
-          uniformDetail = uniformCheck.detail;
-          wrongType = uniformCheck.detectedType != null;
-        }
-      }
-      if (uniformDetail) {
-        const code = wrongType ? "WRONG_UNIFORM" : "NO_UNIFORM";
-        lastDecisionByPersonRef.current.set(person.id, { at: Date.now(), granted: false });
-        const denyToken = ++decisionSeqRef.current;
-        setKioskState("denied");
-        playCue("deny");
-        setStatusMessage(uniformDetail);
-        setHoldNotice({
-          kind: "denied",
-          name: person.name,
-          at: Date.now(),
-          personId: person.id,
-          detail: uniformDetail,
-        });
-        rememberDecision(person.name, person.id, false);
-        setSlotPhaseAt(slot, "denied", uniformDetail);
-        cardHoldUntilRef.current = Date.now() + RESULT_CARD_MIN_HOLD_MS;
-        faceWindowRef.current[slot] = { ...EMPTY_FACE_WINDOW };
-        scheduleCardRetire(slot, denyToken);
-        await addLog({
-          person_id: person.id,
-          person_name: person.name,
-          person_type: "student",
-          direction: "entry",
-          method: "qr",
-          success: false,
-          confidence: 0,
-          uniform_ok: false,
-          failure_reason: uniformDetail,
-          reason_code: code,
-          decision_note: `${uniformDetail} — school ID QR`,
-          client_id: "kiosk-01",
-          gate_state: "closed",
-          device_timestamp: new Date().toISOString(),
-        }).catch((err) => console.warn("[Kiosk] Log write failed:", err));
-        refreshStats();
-        setTimeout(() => {
-          setKioskState("ready");
-          setStatusMessage("Ready");
-          setScanStep("searching");
-        }, VERDICT_HOLD_MS);
-        return;
-      }
-    }
-
-    const cardToken = ++decisionSeqRef.current;
-    setVerdict({ person, confidence: 0, isGuest: false });
-    setScanStep("done");
+    // --- Step 1 lock: publish the name BEFORE any uniform reading ---
+    // A QR names its student the moment it decodes. The old flow ran the
+    // uniform check first and only showed the name on the final verdict, so a
+    // slow model (or a deny) left the screen nameless. The lock freezes the
+    // name + course on the oval NOW; Step 2 waits for the Next button.
+    if (flowStepRef.current !== "identify") return;
+    lockedRef.current = {
+      id: person.id,
+      name: person.name,
+      department: person.department ?? "",
+      uniformType: person.uniform_type ?? "",
+      method: "qr",
+      confidence: 0,
+      faceBbox: null,
+      isGuest: person.uniform_type === "guest",
+    };
     slotCardsRef.current[slot] = {
       id: person.id,
       name: person.name,
       department: person.department ?? "",
       confidence: 0,
     };
-    setSlotPhaseAt(slot, "granted");
+    setSlotPhaseAt(slot, "confirmed");
+    setScanStep("done");
+    setStatusMessage(`${person.name} — check the name, then press Next`);
+    playCue("grant");
+    setFlow("locked");
+  }
 
+  /**
+   * Stepped-flow controls: the camera only READS; every state change below is
+   * pressed by the operator, in order. Step 1 locks, Next judges, Open Gate
+   * fires the relay.
+   */
+
+  /** Back to Step 1: drop the lock and let the camera read again. */
+  function handleRetake() {
+    lockedRef.current = null;
+    slotCardsRef.current = [null, null];
+    setSlotPhases(["empty", "empty"]);
+    setSlotDetails(["", ""]);
+    lastMatchRef.current = null;
+    setLastMatch(null);
+    setConfirmProgress(0);
+    faceWindowRef.current = [{ ...EMPTY_FACE_WINDOW }, { ...EMPTY_FACE_WINDOW }];
+    setKioskState("ready");
+    setStatusMessage("Ready — look at the oval or show your school ID");
+    setScanStep("searching");
+    setHoldNotice(null);
+    setFlow("identify");
+  }
+
+  /**
+   * Deny the locked identity WITH its name on screen. The old automatic deny
+   * paths never set the oval card, so a denied student saw only the violation
+   * text and nobody could tell whose it was.
+   */
+  function denyLocked(lockedId: LockedIdentity, code: string, detail: string) {
+    lastDecisionByPersonRef.current.set(lockedId.id, { at: Date.now(), granted: false });
+    const isUniformCode = code === "WRONG_UNIFORM" || code === "NO_UNIFORM";
+    setKioskState("denied");
+    playCue("deny");
+    setStatusMessage(detail);
+    slotCardsRef.current[0] = {
+      id: lockedId.id,
+      name: lockedId.name,
+      department: lockedId.department,
+      confidence: lockedId.confidence,
+    };
+    setSlotPhaseAt(0, "denied", `${lockedId.name} — ${detail}`);
+    rememberDecision(lockedId.name, lockedId.id, false);
+    setHoldNotice({
+      kind: "denied",
+      name: lockedId.name,
+      at: Date.now(),
+      personId: lockedId.id,
+      detail,
+    });
+    setScanStep("done");
+    setFlow("uniformFail");
+    void addLog({
+      person_id: lockedId.id,
+      person_name: lockedId.name,
+      person_type: lockedId.isGuest ? "guest" : "student",
+      direction: "entry",
+      method: lockedId.method,
+      success: false,
+      confidence: lockedId.confidence,
+      uniform_ok: isUniformCode ? false : null,
+      failure_reason: detail,
+      reason_code: code,
+      decision_note: `${detail} — ${lockedId.method === "qr" ? "school ID QR" : "face + Next"}`,
+      client_id: "kiosk-01",
+      gate_state: "closed",
+      device_timestamp: new Date().toISOString(),
+    }).catch((err) => console.warn("[Kiosk] Log write failed:", err));
+    refreshStats();
+  }
+
+  /** The locked identity passed Step 2: show the uniform line + Open Gate. */
+  function passLocked(lockedId: LockedIdentity, detail: string) {
+    slotCardsRef.current[0] = {
+      id: lockedId.id,
+      name: lockedId.name,
+      department: lockedId.department,
+      confidence: lockedId.confidence,
+      uniform: detail,
+    };
+    setSlotPhaseAt(0, "confirmed");
+    setStatusMessage(`${lockedId.name} — uniform OK. Press Open Gate.`);
+    setScanStep("done");
+    playCue("grant");
+    setFlow("uniformPass");
+  }
+
+  /**
+   * Step 2: judge the locked identity — lockdown first, then the guest-pass
+   * expiry for guests or the CLIP uniform read for students. Pass or fail is
+   * published with the name attached; the gate still waits for its own button.
+   */
+  async function handleNext() {
+    const lockedId = lockedRef.current;
+    if (!lockedId || flowStepRef.current !== "locked") return;
+    setFlow("checkingUniform");
+    setStatusMessage("Checking — hold still");
+    setScanStep("verify");
+    if (settingsRef.current.lockdownMode) {
+      denyLocked(
+        lockedId,
+        "LOCKDOWN_ACTIVE",
+        settingsRef.current.lockdownReason
+          ? `Campus lockdown — ${settingsRef.current.lockdownReason}`
+          : "Campus lockdown — see guard",
+      );
+      return;
+    }
+    if (lockedId.isGuest) {
+      // Guests carry no uniform requirement — only the pass expiry is judged.
+      const record = enrolledRef.current.find((x) => x.id === lockedId.id);
+      const pass = evaluateGuestPass(
+        (record as { valid_until?: string | null } | undefined)?.valid_until,
+        Date.now(),
+      );
+      if (pass.expired) {
+        denyLocked(
+          lockedId,
+          "GUEST_EXPIRED",
+          `Guest pass expired${pass.expiryLabel ? ` ${pass.expiryLabel}` : ""} — see guard to renew`,
+        );
+      } else {
+        passLocked(lockedId, "Guest pass verified");
+      }
+      return;
+    }
+    const video = videoRef.current;
+    const vw = video?.videoWidth ?? 0;
+    const vh = video?.videoHeight ?? 0;
+    if (!video || vw === 0 || vh === 0) {
+      denyLocked(lockedId, "NO_UNIFORM", "Uniform detector unavailable");
+      return;
+    }
+    // The face path re-reads the winning face box; the QR path has no face
+    // (the student may hold the ID over it), so it reads the centred
+    // head-height box the floor oval guides every student to stand in.
+    const faceBbox = lockedId.faceBbox ?? qrFallbackFaceBbox();
+    const band = torsoRegion(faceBbox, { videoWidth: vw, videoHeight: vh });
+    uniformScanRef.current = {
+      bbox: [band.x / vw, band.y / vh, band.width / vw, band.height / vh],
+      until: Date.now() + 10000,
+    };
+    setStatusMessage("Reading uniform — hold still");
+    const uniformCheck = await checkUniform(
+      video,
+      faceBbox,
+      lockedId.uniformType,
+      canvasRef.current ?? undefined,
+    ).catch((): UniformCheckResult => ({
+      ok: false,
+      confidence: 0,
+      detail: "Uniform detector unavailable",
+    }));
+    uniformScanRef.current = null;
+    // Retake was pressed mid-read: the stale result belongs to nobody now.
+    // (Template widens the read: the entry guard narrowed `.current` to
+    // "locked", so comparing the ref directly is a type error here.)
+    if (`${flowStepRef.current}` !== "checkingUniform") return;
+    if (!uniformCheck.ok) {
+      denyLocked(
+        lockedId,
+        uniformCheck.detectedType ? "WRONG_UNIFORM" : "NO_UNIFORM",
+        uniformCheck.detail,
+      );
+      return;
+    }
+    passLocked(lockedId, uniformCheck.detail);
+  }
+
+  /**
+   * Step 3: the ONLY place the relay fires. Opens the linked controller when
+   * there is one (OPEN/AWAITING), otherwise records the honest demo outcome
+   * (SENT — command issued, no controller linked), writes the access row, and
+   * resets the oval for the next student when the card hold elapses.
+   */
+  async function handleOpenGate() {
+    const lockedId = lockedRef.current;
+    if (!lockedId || flowStepRef.current !== "uniformPass") return;
+    setFlow("opened");
+    const cardToken = ++decisionSeqRef.current;
+    setKioskState("granted");
+    setSlotPhaseAt(0, "granted");
+    setStatusMessage(`Welcome, ${lockedId.name}!`);
     const gateConnectedNow = gateConnectedRef.current;
     if (gateConnectedNow) {
       await openGate().catch((err) => console.warn("[Kiosk] Gate open failed:", err));
     }
     const gateConfirmed = gateConnectedNow ? await confirmGateOpen(3000).catch(() => false) : false;
-    const gateOutcome = resolveGateOutcome({
-      gateConnected: gateConnectedNow,
-      confirmed: gateConfirmed,
-    });
-    setGateState(gateOutcome);
+    setGateState(resolveGateOutcome({ gateConnected: gateConnectedNow, confirmed: gateConfirmed }));
     const gateOpenSeconds = clampGateWindow(settingsRef.current.gateOpenDuration);
     setGateSecondsLeft(gateOpenSeconds);
     gateBannerUntilRef.current = Date.now() + gateOpenSeconds * 1000;
-
     frameClearedRef.current = false;
-    const grantedAt = Date.now();
-    // Guarantee the name + course are readable for the full window: the oval is
-    // empty on a QR entry, so nothing else keeps this card on screen.
-    cardHoldUntilRef.current = grantedAt + RESULT_CARD_MIN_HOLD_MS;
-    // This student's evidence is spent; the next arrival starts a fresh window
-    // instead of inheriting an average that has already been decided.
-    faceWindowRef.current[slot] = { ...EMPTY_FACE_WINDOW };
-    scheduleCardRetire(slot, cardToken);
-    lastDecisionByPersonRef.current.set(person.id, { at: grantedAt, granted: true });
-    rememberDecision(person.name, person.id, true);
-    setHoldNotice({
-      kind: "granted",
-      name: person.name,
-      at: grantedAt,
-      personId: person.id,
-    });
-
+    const openedAt = Date.now();
+    cardHoldUntilRef.current = openedAt + RESULT_CARD_MIN_HOLD_MS;
+    faceWindowRef.current[0] = { ...EMPTY_FACE_WINDOW };
+    faceWindowRef.current[1] = { ...EMPTY_FACE_WINDOW };
+    lastDecisionByPersonRef.current.set(lockedId.id, { at: openedAt, granted: true });
+    rememberDecision(lockedId.name, lockedId.id, true);
+    setHoldNotice({ kind: "granted", name: lockedId.name, at: openedAt, personId: lockedId.id });
+    const uniformLine = slotCardsRef.current[0]?.uniform ?? null;
+    const passNote =
+      lockedId.method === "qr" && !lockedId.isGuest
+        ? `School ID QR verified — uniform ${uniformLine ?? "checked"}`
+        : (uniformLine ?? "Uniform check passed");
     await addLog({
-      person_id: person.id,
-      person_name: person.name,
-      person_type: "student",
+      person_id: lockedId.id,
+      person_name: lockedId.name,
+      person_type: lockedId.isGuest ? "guest" : "student",
       direction: "entry",
-      method: "qr",
+      method: lockedId.method,
       success: true,
-      confidence: 0,
-      failure_reason: "School ID QR verified \u2014 face not required",
-      reason_code: "QR_PASS",
-      decision_note: `School ID QR ${person.student_id} verified \u2014 face not required`,
+      confidence: lockedId.confidence,
+      failure_reason: passNote,
+      uniform_ok: lockedId.isGuest ? null : true,
+      reason_code: lockedId.isGuest
+        ? "GUEST_PASS_VALID"
+        : lockedId.method === "qr"
+          ? "QR_PASS"
+          : "POLICY_PASS",
+      decision_note: passNote,
       client_id: "kiosk-01",
       gate_state: gateStateForLog({ gateConnected: gateConnectedNow, confirmed: gateConfirmed }),
       device_timestamp: new Date().toISOString(),
     }).catch((err) => console.warn("[Kiosk] Log write failed:", err));
     refreshStats();
-    updateEnrollmentHealth?.();
-
     if (gateConnectedNow) {
       setTimeout(() => {
         closeGate().catch((err) => console.warn("[Kiosk] Gate close failed:", err));
       }, gateOpenSeconds * 1000);
     }
-
+    // Cooldown before the next student — token-guarded so an older timer can
+    // never wipe a newer card.
     setTimeout(() => {
       if (decisionSeqRef.current !== cardToken) return;
-      setKioskState("ready");
-      setStatusMessage("Ready");
-      setVerdict(null);
+      handleRetake();
       setLastMatch(null);
-      setScanStep("searching");
       if (gateBannerUntilRef.current === 0 || Date.now() >= gateBannerUntilRef.current) {
         setGateState(null);
         setGateSecondsLeft(null);
@@ -1571,6 +1731,13 @@ export default function KioskPage() {
     video: HTMLVideoElement,
     canvas: HTMLCanvasElement,
   ) {
+    // Stepped flow: Step 1 owns the camera until the operator presses a
+    // button. Once an identity is locked (or its uniform/gate step is
+    // running), recognition may not repaint, clear, or decide anything — this
+    // is what used to eat a QR card while its student was still standing
+    // there. The detection loop above keeps drawing the reticle; only the
+    // decisions pause.
+    if (flowStepRef.current !== "identify") return;
     // Too far away to score: a 40-pixel face embeds as noise and noise matches
     // whoever it happens to be closest to.
     if (faceTooSmall(face.bbox)) {
@@ -1739,34 +1906,14 @@ export default function KioskPage() {
     // closed, never expire while they stayed, and shadow whoever came next. The
     // grant branch below is the only place the card is written.
 
-    // ─── Per-identity decision gate ─────────────────────
-    // Recognition always runs (the HUD and identity phase above track whoever
-    // is in frame); THIS decides whether the person in frame may go through
-    // the full decision pipeline (uniform → verdict → log → gate). The prior
-    // decision is looked up FOR THE IDENTITY IN FRAME: a brand-new student
-    // has none and is decided immediately — even while the previous
-    // student's "already recorded" notice is still up — while the same
-    // student lingering at the gate is decided once per stay.
-    if (
-      !shouldDecide({
-        lastDecisionAt: match.person
-          ? (lastDecisionByPersonRef.current.get(match.person.id)?.at ?? 0)
-          : 0,
-        frameEmptySinceLastDecision: frameClearedRef.current,
-        now: Date.now(),
-      })
-    ) {
-      return;
-    }
-
-    // Already recorded — the whole point of the one-minute window. A person
-    // returning inside it (dart out for 5s, tie a shoelace, step back) is
-    // shown the "proceed to the gate" notice again, anchored to their ORIGINAL
-    // decision time, and the full grant sequence never runs: no second card,
-    // no gate command, no second access row. Only a fresh arrival after the
-    // window (afternoon class) earns a new scan. This suppression is keyed to
-    // the person IN FRAME, so it never blocks a different student.
-    if (match.matched && match.person) {
+    // Step 1 lock: the window winner is the identity. The old flow ran
+    // straight from this winner into the uniform read, the verdict, the log
+    // row, and the gate relay — one automatic chain the operator could
+    // neither see into nor stop. Now the winner only freezes its name and
+    // course on the oval and waits: Next runs Step 2, Open Gate fires the
+    // relay. Recognition keeps tracking behind the lock, but the freeze at
+    // the top of this function keeps it off the card.
+    if (flowStepRef.current === "identify" && match.matched && match.person) {
       const prev = lastDecisionByPersonRef.current.get(match.person.id);
       if (prev?.granted && isRepeatDecision({ lastDecisionAt: prev.at, now: Date.now() })) {
         setHoldNotice({
@@ -1777,309 +1924,35 @@ export default function KioskPage() {
         });
         return;
       }
-    }
-
-    // Guests are flagged by their uniform_type marker (data convention only).
-    const isGuestMatch = match.matched && match.person?.uniform_type === "guest";
-
-    // Uniform check — students only, guests skip it (no uniform requirement).
-    // The torso band under the named face goes to the CLIP zero-shot check:
-    // the uniform prompts must beat every plain-clothes prompt clearly.
-    // A missing or failing detector fails closed — waving
-    // everyone through would make the admin toggle a lie.
-    let uniformCheck: UniformCheckResult | null = null;
-    if (match.matched && match.person && settingsRef.current.uniformEnabled && !isGuestMatch) {
-      // Publish the torso band being read so the overlay draws the "what I am
-      // reading" box while CLIP runs, and say so on the status line. Cleared
-      // the moment the check settles (grant/deny branches overwrite the text).
-      const vw = video.videoWidth || 640;
-      const vh = video.videoHeight || 640;
-      const band = torsoRegion(face.bbox, { videoWidth: vw, videoHeight: vh });
-      uniformScanRef.current = {
-        bbox: [band.x / vw, band.y / vh, band.width / vw, band.height / vh],
-        until: Date.now() + 10000,
-      };
-      setStatusMessage("Reading uniform…");
-      uniformCheck = await checkUniform(
-        video,
-        face.bbox,
-        match.person.uniform_type ?? "",
-        canvas,
-      ).catch((): UniformCheckResult => ({
-        ok: false,
-        confidence: 0,
-        detail: "Uniform detector unavailable",
-      }));
-      uniformScanRef.current = null;
-    }
-    const uniformFailed = uniformCheck !== null && uniformCheck.ok !== true;
-
-    // Determine access (lockdown > guest expiry > uniform > face+policy).
-    const locked = settingsRef.current.lockdownMode;
-    let guestExpired = false;
-    let guestExpiryLabel = "";
-    if (isGuestMatch) {
-      const raw = (match.person as { valid_until?: string | null })?.valid_until;
-      const pass = evaluateGuestPass(raw, Date.now());
-      guestExpired = pass.expired;
-      guestExpiryLabel = pass.expiryLabel;
-    }
-    const denyReason = !match.matched
-      ? null
-      : locked
-        ? {
-            code: "LOCKDOWN_ACTIVE",
-            note: settingsRef.current.lockdownReason
-              ? `Campus lockdown — ${settingsRef.current.lockdownReason}`
-              : "Campus lockdown — see guard",
-          }
-        : guestExpired
-          ? {
-              code: "GUEST_EXPIRED",
-              note: `Guest pass expired${guestExpiryLabel ? ` ${guestExpiryLabel}` : ""} — see guard to renew`,
-            }
-          : uniformFailed
-            ? {
-                code: uniformCheck!.detectedType ? "WRONG_UNIFORM" : "NO_UNIFORM",
-                note: uniformCheck!.detail,
-              }
-            : null;
-    const accessGranted = match.matched && !denyReason;
-
-    if (accessGranted) {
-      // Grant access — the card timer must know it owns the screen (a new
-      // decision can land while this card's hold window is still running).
-      const cardToken = ++decisionSeqRef.current;
-      setKioskState("granted");
-      // No cue here: the recognition path above already greeted this arrival,
-      // and a second play would cut the recording off and start it over.
-      setStatusMessage(`Welcome, ${match.person!.name}!`);
-      // Freeze the card identity: recognition keeps overwriting lastMatch
-      // while the card is up, so the card reads from this snapshot and the
-      // name survives the person stepping out of frame for the full hold.
-      setVerdict({
-        person: match.person!,
+      lockedRef.current = {
+        id: match.person.id,
+        name: match.person.name,
+        department: match.person.department ?? "",
+        uniformType: match.person.uniform_type ?? "",
+        method: "face",
         confidence: match.confidence,
-        isGuest: isGuestMatch,
-        uniformDetail: uniformCheck?.detail ?? null,
-      });
-      setSlotPhaseAt(slot, "granted");
-      // Name + course for the card, taken from the identity that was decided.
+        faceBbox: face.bbox,
+        isGuest: match.person.uniform_type === "guest",
+      };
       slotCardsRef.current[slot] = {
-        id: match.person!.id,
-        name: match.person!.name,
-        department: match.person!.department ?? "",
+        id: match.person.id,
+        name: match.person.name,
+        department: match.person.department ?? "",
         confidence: match.confidence,
-        uniform: uniformCheck?.detail ?? null,
       };
-
-      // Open gate (Wi-Fi ESP32 or USB Arduino)
-      // 🔴 FIX BUG #1: Use ref for gate state check
-      if (gateConnectedRef.current) {
-        await openGate().catch((err) => console.warn("[Kiosk] Gate open failed:", err));
-      }
-
-      // 🔴 FEEDBACK LOOP: confirm the gate actually opened (max 3s)
-      //
-      // Three honest outcomes, because showing nothing made an unwired gate look
-      // like a broken gate: OPEN (controller confirmed), AWAITING (linked but
-      // silent), SENT (no controller linked — command issued, demo mode).
-      const gateConnectedNow = gateConnectedRef.current;
-      const gateConfirmed = gateConnectedNow
-        ? await confirmGateOpen(3000).catch(() => false)
-        : false;
-      const gateOutcome = resolveGateOutcome({
-        gateConnected: gateConnectedNow,
-        confirmed: gateConfirmed,
-      });
-      setGateState(gateOutcome);
-      const gateOpenSeconds = clampGateWindow(settingsRef.current.gateOpenDuration);
-      const gateOpenMs = gateOpenSeconds * 1000;
-      setGateSecondsLeft(gateOpenSeconds);
-      gateBannerUntilRef.current = Date.now() + gateOpenMs;
-      setStatusMessage(
-        gateConfirmed
-          ? `Welcome, ${match.person!.name}! Gate OPEN`
-          : `Welcome, ${match.person!.name}!`,
-      );
-
-      // 🛡️ Duplicate guard — a lingering student (or one who steps out and
-      // straight back in) must not produce a second access row. The decision
-      // starts a new stay: the "frame cleared" flag resets so this identity
-      // is decided once more only after they genuinely leave again.
-      frameClearedRef.current = false;
-      const grantedAt = Date.now();
-      // Same guarantee as a QR entry: the student often steps back as the gate
-      // opens, and the card must survive that for a readable beat.
-      cardHoldUntilRef.current = grantedAt + RESULT_CARD_MIN_HOLD_MS;
-      // The card comes down on its own after the hold, even though this student
-      // is still standing there; their samples must not decide the next one.
+      setSlotPhaseAt(slot, "confirmed");
+      setScanStep("done");
+      setStatusMessage(`${match.person.name} — check the name, then press Next`);
       faceWindowRef.current[slot] = { ...EMPTY_FACE_WINDOW };
-      scheduleCardRetire(slot, cardToken);
-      const isRepeatGrant = isRepeatDecision({
-        lastDecisionAt: lastDecisionByPersonRef.current.get(match.person!.id)?.at ?? 0,
-        now: grantedAt,
-      });
-      if (!isRepeatGrant)
-        lastDecisionByPersonRef.current.set(match.person!.id, { at: grantedAt, granted: true });
-      rememberDecision(match.person!.name, match.person!.id, true);
-      setHoldNotice({
-        kind: "granted",
-        name: match.person!.name,
-        at: grantedAt,
-        personId: match.person!.id,
-      });
-
-      // Log access (015 explainable: reason_code + decision_note)
-      if (!isRepeatGrant) {
-        const passNote = isGuestMatch
-          ? (() => {
-              const p = match.person as { host_name?: string | null; valid_until?: string | null };
-              const exp = p.valid_until
-                ? ` valid until ${new Date(p.valid_until).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`
-                : "";
-              return `Guest pass${p.host_name ? ` host ${p.host_name}` : ""}${exp} — face verified`;
-            })()
-          : uniformCheck
-            ? `Uniform verified — ${uniformCheck.detail}`
-            : "Granted — uniform check disabled in settings";
-        await addLog({
-          person_id: match.person!.id,
-          person_name: match.person!.name,
-          person_type: isGuestMatch ? "guest" : "student",
-          direction: "entry",
-          method: "face",
-          success: true,
-          confidence: match.confidence,
-          failure_reason: passNote,
-          uniform_ok: isGuestMatch ? null : (uniformCheck?.ok ?? null),
-          reason_code: isGuestMatch ? "GUEST_PASS_VALID" : "POLICY_PASS",
-          decision_note: passNote,
-          client_id: "kiosk-01",
-          gate_state: gateStateForLog({
-            gateConnected: gateConnectedNow,
-            confirmed: gateConfirmed,
-          }),
-          device_timestamp: new Date().toISOString(),
-        }).catch((err) => console.warn("[Kiosk] Log write failed:", err));
-      }
-
-      // Update stats
-      refreshStats();
-
-      // Release the barrier when its configured open window elapses.
-      if (gateConnectedNow) {
-        setTimeout(() => {
-          closeGate().catch((err) => console.warn("[Kiosk] Gate close failed:", err));
-        }, gateOpenMs);
-      }
-
-      // Cooldown before next scan — token-guarded: if a NEW decision took
-      // over the screen while this card was holding, this older timer must
-      // not wipe the new verdict.
-      setTimeout(() => {
-        if (decisionSeqRef.current !== cardToken) return;
-        setKioskState("ready");
-        setStatusMessage("Ready");
-        setLastMatch(null);
-        setVerdict(null);
-        // Reset the phase so the rail never sticks on a stale step while idle.
-        setScanStep("searching");
-        // The barrier banner outlives the verdict card when the configured
-        // open window is longer than the card hold — clear it only once the
-        // window has actually elapsed (the countdown effect handles the rest).
-        if (gateBannerUntilRef.current === 0 || Date.now() >= gateBannerUntilRef.current) {
-          setGateState(null);
-          setGateSecondsLeft(null);
-        }
-      }, VERDICT_HOLD_MS);
-    } else if (match.matched && denyReason) {
-      // Denied by policy: lockdown > expired pass.
-      const detail = denyReason.note;
-      const code = denyReason.code;
-      const cardToken = ++decisionSeqRef.current;
-      setKioskState("denied");
-      playCue("deny");
-      setStatusMessage(detail);
-      setVerdict({
-        person: match.person!,
-        confidence: match.confidence,
-        isGuest: false,
-        uniformDetail: uniformFailed ? (uniformCheck?.detail ?? null) : null,
-      });
-      setSlotPhaseAt(slot, "denied", detail);
-      cardHoldUntilRef.current = Date.now() + RESULT_CARD_MIN_HOLD_MS;
-      faceWindowRef.current[slot] = { ...EMPTY_FACE_WINDOW };
-      scheduleCardRetire(slot, cardToken);
-
-      // Same duplicate guard as a grant: a denial must not be
-      // re-logged every few seconds while the student stands there. The
-      // decision starts a new stay for this identity.
-      frameClearedRef.current = false;
-      const deniedAt = Date.now();
-      const isRepeatDenial = isRepeatDecision({
-        lastDecisionAt: lastDecisionByPersonRef.current.get(match.person!.id)?.at ?? 0,
-        now: deniedAt,
-      });
-      if (!isRepeatDenial)
-        lastDecisionByPersonRef.current.set(match.person!.id, { at: deniedAt, granted: false });
-      rememberDecision(match.person!.name, match.person!.id, false);
-      setHoldNotice({
-        kind: "denied",
-        name: match.person!.name,
-        at: deniedAt,
-        personId: match.person!.id,
-        detail,
-      });
-
-      if (!isRepeatDenial) {
-        await addLog({
-          person_id: match.person!.id,
-          person_name: match.person!.name,
-          person_type: match.person!.uniform_type === "guest" ? "guest" : "student",
-          direction: "entry",
-          method: "face",
-          success: false,
-          confidence: match.confidence,
-          uniform_ok: code === "WRONG_UNIFORM" || code === "NO_UNIFORM" ? false : null,
-          failure_reason: detail,
-          reason_code: code,
-          decision_note: detail,
-          client_id: "kiosk-01",
-          device_timestamp: new Date().toISOString(),
-        }).catch((err) => console.warn("[Kiosk] Log write failed:", err));
-      }
-
-      refreshStats();
-
-      // Reset after a moment — token-guarded like the grant card.
-      setTimeout(() => {
-        if (decisionSeqRef.current !== cardToken) return;
-        if (kioskStateRef.current === "denied") {
-          setKioskState("ready");
-          setStatusMessage("Ready");
-          setLastMatch(null);
-          setVerdict(null);
-          // Same stuck-phase fix as the grant path.
-          setScanStep("searching");
-        }
-      }, 4000);
-    } else {
-      // Safety net for unconfirmed ticks (a stranger still settling). It must
-      // NEVER clobber a verdict hold: recognition
-      // keeps running while a grant/deny card owns the screen, and a new face
-      // stepping in behind the decided student used to yank their card away
-      // mid-hold via this branch. Only touch idle states.
-      if (kioskStateRef.current !== "granted" && kioskStateRef.current !== "denied") {
+      setFlow("locked");
+      return;
+    } else if (flowStepRef.current === "identify") {
+      // No decision here anymore — but keep the rail honest while a stranger
+      // is still settling, without touching a denied card mid-hold.
+      if (kioskStateRef.current !== "denied") {
         setKioskState("ready");
         setStatusMessage("Scanning...");
       }
-      // Deliberately no audit row here. access_logs records identified
-      // students — granted, or denied by policy — and nothing else; an
-      // unreadable face is not an access attempt by a known identity. This
-      // branch must also never touch the re-arm lock: an unknown face is not
-      // a decision, and locking here deadlocked the scanner (the person could
-      // never be re-scored into a match).
     }
   }
 
@@ -3567,6 +3440,53 @@ export default function KioskPage() {
                 : "Gate clearing"}
             </p>
           </div>
+        </div>
+      )}
+
+      {/* Stepped-flow controls: the camera only reads, these buttons decide,
+          in order. They sit above the result panel with their own pointer
+          events — the overlays around them are click-transparent. */}
+      {(flowStep === "locked" ||
+        flowStep === "checkingUniform" ||
+        flowStep === "uniformPass" ||
+        flowStep === "uniformFail") && (
+        <div
+          className="absolute inset-x-0 z-40 flex items-center justify-center gap-3 px-4"
+          style={{ bottom: "max(9rem, calc(env(safe-area-inset-bottom) + 8rem))" }}
+        >
+          {(flowStep === "locked" || flowStep === "uniformFail") && (
+            <button
+              onClick={handleRetake}
+              className="inline-flex items-center gap-2 rounded-2xl border-2 border-white/60 bg-white/95 px-5 py-3 text-sm sm:text-base font-black uppercase tracking-wider text-surface-700 shadow-xl backdrop-blur-md active:scale-95 transition-transform cursor-pointer"
+            >
+              <RefreshCw className="w-5 h-5" />
+              Retake
+            </button>
+          )}
+          {flowStep === "locked" && (
+            <button
+              onClick={handleNext}
+              className="inline-flex items-center gap-2 rounded-2xl bg-blue-600 px-6 py-3 text-sm sm:text-base font-black uppercase tracking-wider text-white shadow-xl active:scale-95 transition-transform cursor-pointer"
+            >
+              Next: uniform
+              <ArrowRight className="w-5 h-5" />
+            </button>
+          )}
+          {flowStep === "checkingUniform" && (
+            <p className="inline-flex items-center gap-2 rounded-2xl bg-amber-100/95 px-5 py-3 text-sm sm:text-base font-black uppercase tracking-wider text-amber-800 shadow-xl backdrop-blur-md animate-pulse">
+              <RefreshCw className="w-5 h-5 animate-spin" />
+              Reading uniform…
+            </p>
+          )}
+          {flowStep === "uniformPass" && (
+            <button
+              onClick={handleOpenGate}
+              className="inline-flex items-center gap-2 rounded-2xl bg-emerald-500 px-8 py-4 text-base sm:text-lg font-black uppercase tracking-wider text-white shadow-2xl active:scale-95 transition-transform cursor-pointer"
+            >
+              <CheckCircle2 className="w-6 h-6" />
+              Open gate
+            </button>
+          )}
         </div>
       )}
 
